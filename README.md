@@ -21,7 +21,7 @@ Bond graphs provide a **domain-independent modeling framework** for physical sys
 ## Install directly from GitHub
 The easiest way to install the library is directly via pip:
 ```bash
-pip install git+https://github.com/MrP123/BondgraphSimulator.git
+pip install git+https://github.com/MrP123/pyBondGraph.git
 ```
 This installs the latest version of the package from the repository.
 
@@ -30,8 +30,8 @@ This installs the latest version of the package from the repository.
 ## Development installation
 To work with the source code:
 ```bash
-git clone https://github.com/MrP123/BondgraphSimulator.git
-cd BondgraphSimulator
+git clone https://github.com/MrP123/pyBondGraph.git
+cd pyBondGraph
 pip install -e .
 ```
 
