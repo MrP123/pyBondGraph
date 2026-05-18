@@ -6,8 +6,19 @@ readme = "README.md"
 authors = [
     {name = "Matthias Panny", email = "matthias.panny@mci.edu"},
 ]
-license = "CC-BY-NC-SA-4.0"
+
 requires-python = ">=3.13"
+
+classifiers = [
+    "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: 3.14",
+    "Operating System :: OS Independent",
+    "Topic :: Scientific/Engineering",
+    "Development Status :: 3 - Alpha",
+]
+
+license = "CC-BY-NC-SA-4.0"
+
 dynamic = ["dependencies"]
 
 [build-system]
@@ -25,3 +36,7 @@ streamlit = [
     "streamlit>=1.47.0",
     "streamlit-flow-component>=1.6.1"
 ]
+
+[project.urls]
+Homepage = "https://github.com/MrP123/pyBondGraph"
+Issues = "https://github.com/MrP123/pyBondGraph/issues"

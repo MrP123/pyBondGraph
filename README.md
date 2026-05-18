@@ -18,12 +18,15 @@ Bond graphs provide a **domain-independent modeling framework** for physical sys
 
 # Installation
 
-## Install directly from GitHub
-The easiest way to install the library is directly via pip:
+## Install from PyPI or Github
+The easiest way to install the library is via your preferred package manager (e.g. pip) directly from PyPI:
+```bash
+pip install pyBondGraph
+```
+Alternatively one can install the latest development version directly from the GitHub repository:
 ```bash
 pip install git+https://github.com/MrP123/pyBondGraph.git
 ```
-This installs the latest version of the package from the repository.
 
 ---
 
