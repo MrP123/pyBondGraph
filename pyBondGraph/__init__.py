@@ -14,6 +14,8 @@ from .elements import (
     Gyrator,
 )
 from .sensors import IntegratedEffortSensor, IntegratedFlowSensor
+from .port import Port
+from .subbondgraph import SubBondGraph
 
 from .bondgraph import BondGraph
 
@@ -35,4 +37,6 @@ __all__ = [
     "BondGraph",
     "IntegratedEffortSensor",
     "IntegratedFlowSensor",
+    "Port",
+    "SubBondGraph",
 ]

@@ -1,9 +1,12 @@
+from __future__ import annotations
+
 import sympy as sp
 import networkx as nx
 import numpy as np
 import matplotlib.pyplot as plt
 
 from collections.abc import Callable
+from typing import TYPE_CHECKING
 
 from .core import (
     Causality,
@@ -16,19 +19,29 @@ from .core import (
 )
 from .elements import SourceEffort, SourceFlow, OneJunction, ZeroJunction
 
+if TYPE_CHECKING:
+    from .subbondgraph import SubBondGraph
+    from .port import Port
+
 type SolutionType = dict[sp.Expr, sp.Expr]
 
 
 class BondGraph:
     """Represents a bond graph consisting of elements and the bonds that connect them."""
 
-    def __init__(self):
-        """Initializes a new bond graph without any elements or bonds."""
+    def __init__(self, name: str = ""):
+        """Initializes a new bond graph without any elements or bonds.
 
-        Bond.counter = 0  # Reset bond counter for future bond graphs after solution has been computed --> ToDo: fix this hacky solution
+        Parameters
+        ----------
+        name : str, optional
+            Name of the bond graph. Used as namespace prefix when merging sub-models.
+        """
 
-        self.elements = []
+        self.name = name
+        self.elements: list[Node] = []
         self.bonds: list[Bond] = []
+        self._bond_counter = 0  # Instance-scoped bond counter
 
         self.state_vars: list[sp.Expr] = []
         self.equations: list[sp.Expr] = []
@@ -55,6 +68,14 @@ class BondGraph:
 
         if bond in self.bonds:
             raise ValueError(f"Bond {bond} is already part of the bond graph.")
+
+        # Renumber the bond using the instance-scoped counter to avoid collisions
+        subs = bond.rename_symbols(new_num=self._bond_counter)
+        self._bond_counter += 1
+
+        # Propagate renamed symbols into any equations that already reference the old symbols
+        # (relevant when merging sub-models whose equations were built with different numbering)
+        self.equations = [eq.subs(subs) for eq in self.equations]
 
         self.bonds.append(bond)
 
@@ -160,8 +181,6 @@ class BondGraph:
     def get_solution_equations(self) -> SolutionType:
         """Returns the symbolic equations defining the solution of the bond graph.
         The solution is computed by solving the accumulated equations of the bond graph symbolically using `sympy.solve`.
-        The bond counter is reset after computation to allow for future bond graphs to be created without conflicts.
-        This is a temporary workaround and should be (urgently) improved in the future.
 
         Returns
         -------
@@ -172,8 +191,6 @@ class BondGraph:
 
         self.__handle_bonds()
         self.__handle_equations()
-        Bond.counter = 0  # Reset bond counter for future bond graphs after solution has been computed --> ToDo: fix this hacky solution
-
         state_derivatives = [sp.Derivative(var, "t") for var in self.state_vars]
         self.solution = sp.solve(
             self.equations,
@@ -255,6 +272,74 @@ class BondGraph:
 
         return A, B, C, D, sp.Matrix(self.state_vars), n_states, n_inputs, n_outputs
 
+    def add_subbondgraph(self, sub_bondgraph: SubBondGraph, instance_name: str | None = None) -> dict:
+        """Instantiate a SubBondGraph into this bond graph.
+
+        Deep-copies all elements and bonds from the sub-model with
+        namespace prefixing, merges them into this graph, and returns
+        the instantiated ports for subsequent ``connect_ports()`` calls.
+
+        Parameters
+        ----------
+        sub_bondgraph : SubBondGraph
+            The sub-model to instantiate.
+        instance_name : str | None, optional
+            Override the namespace prefix.  Defaults to the sub-model's name.
+
+        Returns
+        -------
+        dict[str, Port]
+            Mapping of port names to new Port objects whose junctions
+            belong to this graph.
+        """
+        return sub_bondgraph._instantiate(self, instance_name)
+
+    def connect_ports(
+        self,
+        port_a: Port,
+        port_b: Port,
+        causality: Causality = Causality.EFFORT_OUT,
+    ) -> Bond:
+        """Connect two ports by adding a bond between their boundary junctions.
+
+        Parameters
+        ----------
+        port_a : Port
+            First port (bond ``from_element``).
+        port_b : Port
+            Second port (bond ``to_element``).
+        causality : Causality, optional
+            Causality of the connecting bond.  Defaults to
+            ``Causality.EFFORT_OUT``.
+
+        Returns
+        -------
+        Bond
+            The newly created connecting bond.
+
+        Raises
+        ------
+        ValueError
+            If the ports belong to incompatible physical domains.
+        """
+        if (
+            port_a.domain != "generic"
+            and port_b.domain != "generic"
+            and port_a.domain != port_b.domain
+        ):
+            raise ValueError(
+                f"Cannot connect ports of different domains: "
+                f"{port_a.domain!r} vs {port_b.domain!r}"
+            )
+
+        bond = Bond(
+            from_element=port_a.junction,
+            to_element=port_b.junction,
+            causality=causality,
+        )
+        self.add_bond(bond)
+        return bond
+
     def plot(self, layout: Callable[[nx.Graph, ...], dict] = nx.spectral_layout, **kwargs) -> tuple[plt.Figure, plt.Axes]:
         """Plots the bond graph as a `networkx` graph.
 
@@ -269,6 +354,7 @@ class BondGraph:
         -------
         tuple[plt.Figure, plt.Axes]
             Matplotlib Figure and axes objects for the plot.
+            
         Raises
         ------
         ValueError
