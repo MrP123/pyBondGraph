@@ -1,0 +1,37 @@
+{
+  "name": "RC_filter",
+  "elements": [
+    {
+      "type": "OneJunction",
+      "name": "j1"
+    },
+    {
+      "type": "Resistor",
+      "name": "R",
+      "value": "R"
+    },
+    {
+      "type": "Capacitor",
+      "name": "C",
+      "value": "C"
+    }
+  ],
+  "bonds": [
+    {
+      "from": 0,
+      "to": 1,
+      "causality": "effort_out"
+    },
+    {
+      "from": 0,
+      "to": 2,
+      "causality": "flow_out"
+    }
+  ],
+  "ports": {
+    "input": {
+      "junction_index": 0,
+      "domain": "electrical"
+    }
+  }
+}
