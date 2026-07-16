@@ -3,6 +3,8 @@ from __future__ import annotations
 import sympy as sp
 import networkx as nx
 import numpy as np
+
+from matplotlib.lines import Line2D
 import matplotlib.pyplot as plt
 
 from collections.abc import Callable
@@ -390,19 +392,25 @@ class BondGraph:
                 bond.to_element.name,
                 label=bond.num,
                 causality=bond.causality,
+                bond=bond,
             )
 
-        # https://networkx.org/documentation/stable/auto_examples/graph/plot_dag_layout.html
-        if nx.is_directed_acyclic_graph(G):
-            for layer, nodes in enumerate(nx.topological_generations(G)):
-                # `multipartite_layout` expects the layer as a node attribute, so add the
-                # numeric layer value as a node attribute
-                for node in nodes:
-                    G.nodes[node]["layer"] = layer
-
-            pos = nx.multipartite_layout(G, subset_key="layer")
-        else:
-            pos = layout(G, **kwargs)
+        # Try Graphviz 'dot' layout first — it minimises edge crossings
+        # and produces clean left-to-right hierarchical layouts.
+        try:
+            pos = nx.drawing.nx_agraph.graphviz_layout(
+                G, prog="dot",
+                args='-Grankdir=LR -Gnodesep=0.8 -Granksep=1.2 -Gordering=out'
+            )
+        except (ImportError, Exception):
+            # Fall back to the previous layout strategy
+            if nx.is_directed_acyclic_graph(G):
+                for layer, nodes in enumerate(nx.topological_generations(G)):
+                    for node in nodes:
+                        G.nodes[node]["layer"] = layer
+                pos = nx.multipartite_layout(G, subset_key="layer")
+            else:
+                pos = layout(G, **kwargs)
 
         fig, ax = plt.subplots(figsize=(10, 8))
         ax.set_axis_off()
@@ -417,13 +425,20 @@ class BondGraph:
             font_color="black",
             arrows=True,
         )
-        nx.draw_networkx_edge_labels(
-            G,
-            pos,
-            edge_labels=nx.get_edge_attributes(G, "label"),
-            font_size=8,
-            ax=ax,
-        )
+        # Draw bond-number labels at varied positions along each edge so
+        # that crossing bonds don't produce overlapping text.
+        for edge_idx, (u, v, data) in enumerate(G.edges(data=True)):
+            x1, y1 = pos[u]
+            x2, y2 = pos[v]
+            # Vary the parameter t ∈ [0.35, 0.65] per edge
+            t = 0.35 + 0.3 * ((edge_idx * 7 + 3) % 11) / 10.0
+            lx = x1 + t * (x2 - x1)
+            ly = y1 + t * (y2 - y1)
+            ax.text(
+                lx, ly, str(data.get("label", "")),
+                fontsize=8, ha="center", va="center",
+                bbox=dict(boxstyle="round,pad=0.15", fc="white", ec="none", alpha=0.8),
+            )
 
         # Function to add a perpendicular line
         def draw_causal_stroke(ax, p1, p2, at="head", length=20, node_size=2000, padding=2):
@@ -489,15 +504,34 @@ class BondGraph:
 
             ax.plot([p_start[0], p_end[0]], [p_start[1], p_end[1]], color="k", lw=1.0)
 
-        # Add perpendicular lines to edges
+        # Collect causal-stroke specs so they can be redrawn on resize.
+        # One entry per bond
+        _stroke_specs: list[tuple] = []
         for u, v, data in G.edges(data=True):
             causality = data.get("causality", None)
-
             if causality is Causality.EFFORT_OUT:
-                draw_causal_stroke(ax, pos[u], pos[v], at="head", padding=-2)
+                _stroke_specs.append((pos[u], pos[v], "head", -2))
             elif causality is Causality.FLOW_OUT:
-                draw_causal_stroke(ax, pos[u], pos[v], at="tail", padding=-2)
+                _stroke_specs.append((pos[u], pos[v], "tail", -2))
             else:
                 raise ValueError(f"Edge {u}->{v} has no valid causality: {causality} --> this should never happen!")
+
+        _stroke_artists: list[Line2D] = []
+
+        def _refresh_strokes(event=None):
+            """Recompute causal strokes in current display coords."""
+
+            for a in _stroke_artists:
+                a.remove() #removes artist (Line2D) from axes
+            _stroke_artists.clear()
+
+            for p1, p2, at, padding in _stroke_specs:
+                draw_causal_stroke(ax, p1, p2, at=at, padding=padding)
+
+            # Newly created Line2D artists are the last len(_stroke_specs) items (i.e. # of bonds lines) on ax.lines --> store to remove later
+            _stroke_artists.extend(ax.lines[-len(_stroke_specs):])
+
+        _refresh_strokes()                                    # initial draw
+        fig.canvas.mpl_connect("resize_event", _refresh_strokes)  # stay correct on resize
 
         return fig, ax
