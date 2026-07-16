@@ -30,8 +30,7 @@
   ],
   "ports": {
     "input": {
-      "junction_index": 0,
-      "domain": "electrical"
+      "node_index": 0
     }
   }
 }

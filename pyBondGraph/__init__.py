@@ -14,8 +14,8 @@ from .elements import (
     Gyrator,
 )
 from .sensors import IntegratedEffortSensor, IntegratedFlowSensor
-from .port import Port
 from .subbondgraph import SubBondGraph
+from .core import Port  # type alias: dict[str, Node]
 
 from .bondgraph import BondGraph
 

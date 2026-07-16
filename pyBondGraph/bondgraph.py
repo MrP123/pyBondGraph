@@ -19,9 +19,10 @@ from .core import (
 )
 from .elements import SourceEffort, SourceFlow, OneJunction, ZeroJunction
 
+from .core import Port
+
 if TYPE_CHECKING:
     from .subbondgraph import SubBondGraph
-    from .port import Port
 
 type SolutionType = dict[sp.Expr, sp.Expr]
 
@@ -272,7 +273,7 @@ class BondGraph:
 
         return A, B, C, D, sp.Matrix(self.state_vars), n_states, n_inputs, n_outputs
 
-    def add_subbondgraph(self, sub_bondgraph: SubBondGraph, instance_name: str | None = None) -> dict:
+    def add_subbondgraph(self, sub_bondgraph: SubBondGraph, instance_name: str | None = None) -> Port:
         """Instantiate a SubBondGraph into this bond graph.
 
         Deep-copies all elements and bonds from the sub-model with
@@ -288,26 +289,44 @@ class BondGraph:
 
         Returns
         -------
-        dict[str, Port]
-            Mapping of port names to new Port objects whose junctions
-            belong to this graph.
+        Port
+            Mapping of port names to new Node objects belonging
+            to this graph.
         """
         return sub_bondgraph._instantiate(self, instance_name)
 
     def connect_ports(
         self,
-        port_a: Port,
-        port_b: Port,
+        node_a: Node,
+        node_b: Node,
         causality: Causality = Causality.EFFORT_OUT,
     ) -> Bond:
-        """Connect two ports by adding a bond between their boundary junctions.
+        """Connect two nodes by adding a bond between them.
+
+        Typically used after :meth:`add_subbondgraph` to wire up the
+        returned port nodes — but any :class:`Node` already in the
+        graph (or about to be added) works.
+
+        ``node_a`` becomes the bond's ``from_element`` and ``node_b``
+        the ``to_element`` — just like the positional convention of
+        the :class:`Bond` constructor.  For two-port elements
+        (:class:`Transformer`, :class:`Gyrator`) the existing
+        ``__handle_bonds`` logic uses this direction to assign
+        ``bond1`` (to_element) vs ``bond2`` (from_element), so no
+        extra ``side`` parameter is needed::
+
+            # Bond INTO gyrator → bond1 (primary)
+            system.connect_ports(junction_node, gyrator, causality)
+
+            # Bond FROM gyrator → bond2 (secondary)
+            system.connect_ports(gyrator, junction_node, causality)
 
         Parameters
         ----------
-        port_a : Port
-            First port (bond ``from_element``).
-        port_b : Port
-            Second port (bond ``to_element``).
+        node_a : Node
+            Source — becomes ``from_element`` of the new bond.
+        node_b : Node
+            Destination — becomes ``to_element`` of the new bond.
         causality : Causality, optional
             Causality of the connecting bond.  Defaults to
             ``Causality.EFFORT_OUT``.
@@ -319,22 +338,21 @@ class BondGraph:
 
         Raises
         ------
-        ValueError
-            If the ports belong to incompatible physical domains.
+        TypeError
+            If an argument is not a Node.
         """
-        if (
-            port_a.domain != "generic"
-            and port_b.domain != "generic"
-            and port_a.domain != port_b.domain
-        ):
-            raise ValueError(
-                f"Cannot connect ports of different domains: "
-                f"{port_a.domain!r} vs {port_b.domain!r}"
+        if not isinstance(node_a, Node):
+            raise TypeError(
+                f"node_a must be a Node, got {type(node_a).__name__}"
+            )
+        if not isinstance(node_b, Node):
+            raise TypeError(
+                f"node_b must be a Node, got {type(node_b).__name__}"
             )
 
         bond = Bond(
-            from_element=port_a.junction,
-            to_element=port_b.junction,
+            from_element=node_a,
+            to_element=node_b,
             causality=causality,
         )
         self.add_bond(bond)

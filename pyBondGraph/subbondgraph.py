@@ -27,7 +27,7 @@ from .core import (
     ElementTwoPort,
     StatefulElement,
 )
-from .port import Port
+from .core import Port
 
 
 class SubBondGraph:
@@ -42,23 +42,24 @@ class SubBondGraph:
     bondgraph : BondGraph
         The internal bond graph that defines this sub-model's
         physics.
-    ports : dict[str, Port]
-        Named ports exposing boundary junctions for external
-        connections.
+    ports : dict[str, Node]
+        Named mapping of port names to boundary :class:`Node` objects
+        (e.g. ``{"in": j1_mech, "out": gyrator}``).  The type alias
+        :data:`Port` is provided for convenience.
     """
 
-    def __init__(self, name: str, bondgraph: BondGraph, ports: dict[str, Port]):
+    def __init__(self, name: str, bondgraph: BondGraph, ports: Port):
         self.name = name
         self.bondgraph = bondgraph
         self.ports = ports
 
-        # Validate that every port junction is actually in the bondgraph
+        # Validate that every port node is actually in the bondgraph
         bg_elements = set(bondgraph.elements)
-        for port_name, port in ports.items():
-            if port.junction not in bg_elements:
+        for port_name, node in ports.items():
+            if node not in bg_elements:
                 raise ValueError(
-                    f"Port '{port_name}' references junction "
-                    f"{port.junction} which is not in the bond graph."
+                    f"Port '{port_name}' references node "
+                    f"{node} which is not in the bond graph."
                 )
 
     # ------------------------------------------------------------------
@@ -89,9 +90,9 @@ class SubBondGraph:
 
         Returns
         -------
-        dict[str, Port]
-            A mapping of port names to *new* Port objects whose
-            junctions belong to the parent graph.  Use these for
+        Port
+            A mapping of port names to *new* Node objects whose
+            elements belong to the parent graph.  Use these for
             subsequent :meth:`BondGraph.connect_ports` calls.
         """
         prefix = (instance_name or self.name) + "_"
@@ -141,14 +142,9 @@ class SubBondGraph:
             parent_bondgraph.add_bond(new_bond)
 
         # 3. Build new port mapping
-        new_ports: dict[str, Port] = {}
-        for port_name, port in self.ports.items():
-            new_junction = elem_map[id(port.junction)]
-            new_ports[port_name] = Port(
-                name=port_name,
-                junction=new_junction,
-                domain=port.domain,
-            )
+        new_ports: Port = {}
+        for port_name, node in self.ports.items():
+            new_ports[port_name] = elem_map[id(node)]
 
         return new_ports
 
@@ -175,7 +171,7 @@ class SubBondGraph:
         )
 
     @classmethod
-    def load(cls, filepath: str | Path) -> "SubBondGraph":
+    def load(cls, filepath: str | Path) -> SubBondGraph:
         """Load a sub-model definition from a JSON file.
 
         Parameters
@@ -227,10 +223,9 @@ class SubBondGraph:
             })
 
         ports_data = {}
-        for port_name, port in self.ports.items():
+        for port_name, node in self.ports.items():
             ports_data[port_name] = {
-                "junction_index": elem_index[id(port.junction)],
-                "domain": port.domain,
+                "node_index": elem_index[id(node)],
             }
 
         return {
@@ -292,14 +287,11 @@ class SubBondGraph:
             bg.add_bond(bond)
 
         # Reconstruct ports
-        ports = {}
+        ports: Port = {}
         for port_name, port_data in data["ports"].items():
-            junction = elements[port_data["junction_index"]]
-            ports[port_name] = Port(
-                name=port_name,
-                junction=junction,
-                domain=port_data.get("domain", "generic"),
-            )
+            # Support both old "junction_index" and new "node_index" keys
+            idx = port_data.get("node_index", port_data.get("junction_index"))
+            ports[port_name] = elements[idx]
 
         return cls(name=data["name"], bondgraph=bg, ports=ports)
 

@@ -225,3 +225,7 @@ class ElementTwoPort(Node, ABC):
 
     def __repr__(self) -> str:
         return f"{self.__class__.__name__}(name = {self.name}, value = {self.value})"
+
+
+# Type alias — a port mapping is simply {name: node, ...}.
+type Port = dict[str, Node]
