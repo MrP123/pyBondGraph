@@ -13,6 +13,7 @@ Bond graphs provide a **domain-independent modeling framework** for physical sys
 * Automatic **symbolic equation derivation** using SymPy
 * Conversion of models to **state-space systems**
 * Example models for electrical and mechanical systems
+* Capaility to **store** and **load** bond graph models in JSON format construct bond graphs from loaded sub bond graphs
 
 ---
 
@@ -71,10 +72,10 @@ capacitor = Capacitor("C", "C")
 series_junction = OneJunction("J1")
 
 # connect elements
-# causalities need to be assigned manually 
-bg.add_bond(Bond(voltage_source, series_junction, Causality.EFFORT_OUT))
-bg.add_bond(Bond(series_junction, resistor, Causality.EFFORT_OUT))
-bg.add_bond(Bond(series_junction, capacitor, Causality.FLOW_OUT))
+# causalities need to be assigned manually ^
+bg.connect(voltage_source, series_junction, Causality.EFFORT_OUT)
+bg.connect(series_junction, resistor, Causality.EFFORT_OUT)
+bg.connect(series_junction, capacitor, Causality.FLOW_OUT)
 
 # plot the resulting BondGraph
 bg.plot()
