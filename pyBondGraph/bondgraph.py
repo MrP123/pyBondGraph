@@ -275,12 +275,12 @@ class BondGraph:
 
         return A, B, C, D, sp.Matrix(self.state_vars), n_states, n_inputs, n_outputs
 
-    def add_subbondgraph(self, sub_bondgraph: SubBondGraph, instance_name: str | None = None) -> Port:
+    def add_subbondgraph(self, sub_bondgraph: SubBondGraph, instance_name: str | None = None, is_prefix: bool = True) -> Port:
         """Instantiate a SubBondGraph into this bond graph.
 
         Deep-copies all elements and bonds from the sub-model with
         namespace prefixing, merges them into this graph, and returns
-        the instantiated ports for subsequent ``connect_ports()`` calls.
+        the instantiated ports for subsequent ``connect()`` calls.
 
         Parameters
         ----------
@@ -288,6 +288,8 @@ class BondGraph:
             The sub-model to instantiate.
         instance_name : str | None, optional
             Override the namespace prefix.  Defaults to the sub-model's name.
+        is_prefix : bool, optional
+            Whether to use the instance name as a prefix or suffix for the copied elements.  Defaults to True.
 
         Returns
         -------
@@ -295,9 +297,9 @@ class BondGraph:
             Mapping of port names to new Node objects belonging
             to this graph.
         """
-        return sub_bondgraph._instantiate(self, instance_name)
+        return sub_bondgraph._instantiate(self, instance_name, is_prefix)
 
-    def connect_ports(
+    def connect(
         self,
         node_a: Node,
         node_b: Node,
@@ -305,7 +307,7 @@ class BondGraph:
     ) -> Bond:
         """Connect two nodes by adding a bond between them.
 
-        Typically used after :meth:`add_subbondgraph` to wire up the
+        Also used after :meth:`add_subbondgraph` to wire up the
         returned port nodes — but any :class:`Node` already in the
         graph (or about to be added) works.
 
@@ -318,10 +320,10 @@ class BondGraph:
         extra ``side`` parameter is needed::
 
             # Bond INTO gyrator → bond1 (primary)
-            system.connect_ports(junction_node, gyrator, causality)
+            system.connect(junction_node, gyrator, causality)
 
             # Bond FROM gyrator → bond2 (secondary)
-            system.connect_ports(gyrator, junction_node, causality)
+            system.connect(gyrator, junction_node, causality)
 
         Parameters
         ----------

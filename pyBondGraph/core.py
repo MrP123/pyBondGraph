@@ -51,7 +51,7 @@ class Bond:
 
     _counter = 0  # Global fallback counter; prefer BondGraph-scoped numbering
 
-    def __init__(self, from_element: Node, to_element: Node, causality: str | Causality, num: int | None = None, prefix: str = ""):
+    def __init__(self, from_element: Node, to_element: Node, causality: str | Causality, num: int | None = None, instance_name: str = "", is_prefix: bool = True):
         """Create a bond between two elements with specified causality.
         The positive direction of this power bond is from `from_element` to `to_element`.
         Efforts and flows are represented by symbolic `sympy.Symbol`s that are strictly real-valued.
@@ -73,9 +73,11 @@ class Bond:
         num : int | None, optional
             Explicit bond number. If None, the global fallback counter is used.
             When bonds are added to a BondGraph, the graph manages numbering.
-        prefix : str, optional
-            Namespace prefix for symbol names (e.g. "Motor_"). Used when merging sub-models
+        instance_name : str, optional
+            Instance name for symbol names (e.g. "Motor_"). Used when merging sub-models
             to avoid symbol collisions.
+        is_prefix : bool, optional
+            Whether to use the instance name as a prefix or suffix. Defaults to True.
 
         Raises
         ------
@@ -98,16 +100,21 @@ class Bond:
         else:
             self.num = num
 
-        self.prefix = prefix
-        self.effort = sp.Symbol(f"e_{self.prefix}{self.num}", real=True)
-        self.flow = sp.Symbol(f"f_{self.prefix}{self.num}", real=True)
+        self.instance_name = instance_name
+
+        if is_prefix:
+            self.effort = sp.Symbol(f"e_{self.instance_name}{self.num}", real=True)
+            self.flow = sp.Symbol(f"f_{self.instance_name}{self.num}", real=True)
+        else:
+            self.effort = sp.Symbol(f"e_{self.num}_{self.instance_name}", real=True)
+            self.flow = sp.Symbol(f"f_{self.num}_{self.instance_name}", real=True)
 
     @property
     def elements(self) -> tuple[Node, Node]:
         """tuple[Node, Node]: The two elements connected by the bond. First element is `from_element`, second is `to_element`."""
         return (self.from_element, self.to_element)
 
-    def rename_symbols(self, new_num: int | None = None, new_prefix: str | None = None) -> dict[sp.Symbol, sp.Symbol]:
+    def rename_symbols(self, new_num: int | None = None, new_instance_name: str | None = None, is_prefix: bool = True) -> dict[sp.Symbol, sp.Symbol]:
         """Rename the effort/flow symbols of this bond and return the substitution map.
         This is used during sub-model merging to avoid symbol collisions.
 
@@ -115,8 +122,10 @@ class Bond:
         ----------
         new_num : int | None, optional
             New bond number. If None, keeps the current number.
-        new_prefix : str | None, optional
-            New namespace prefix. If None, keeps the current prefix.
+        new_instance_name : str | None, optional
+            New instance name. If None, keeps the current instance name.
+        is_prefix : bool, optional
+            Whether to use the instance name as a prefix or suffix. Defaults to True.
 
         Returns
         -------
@@ -128,11 +137,18 @@ class Bond:
 
         if new_num is not None:
             self.num = new_num
-        if new_prefix is not None:
-            self.prefix = new_prefix
+        if new_instance_name is not None:
+            self.instance_name = new_instance_name
 
-        self.effort = sp.Symbol(f"e_{self.prefix}{self.num}", real=True)
-        self.flow = sp.Symbol(f"f_{self.prefix}{self.num}", real=True)
+
+        if is_prefix:
+            padded_name = "_" + self.instance_name + "_" if self.instance_name != "" else "_"
+            self.effort = sp.Symbol(f"e{padded_name}{self.num}", real=True)
+            self.flow = sp.Symbol(f"f{padded_name}{self.num}", real=True)
+        else:
+            padded_name = self.instance_name if self.instance_name != "" else "" # conditional can be skipped            
+            self.effort = sp.Symbol(f"e_{self.num}{padded_name}", real=True)
+            self.flow = sp.Symbol(f"f_{self.num}{padded_name}", real=True)
 
         return {old_effort: self.effort, old_flow: self.flow}
 

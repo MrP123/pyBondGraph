@@ -66,7 +66,7 @@ class SubBondGraph:
     # Instantiation (deep-copy with namespace prefixing)
     # ------------------------------------------------------------------
 
-    def _instantiate(self, parent_bondgraph: BondGraph, instance_name: str | None = None):
+    def _instantiate(self, parent_bondgraph: BondGraph, instance_name: str | None = None, is_prefix: bool = True) -> Port:
         """Create a namespace-prefixed copy and merge it into *parent_bondgraph*.
 
         .. note::
@@ -93,15 +93,24 @@ class SubBondGraph:
         Port
             A mapping of port names to *new* Node objects whose
             elements belong to the parent graph.  Use these for
-            subsequent :meth:`BondGraph.connect_ports` calls.
+            subsequent :meth:`BondGraph.connect` calls.
         """
-        prefix = (instance_name or self.name) + "_"
+
+        if instance_name is None:
+            instance_name = self.name
+
+        def get_new_name(orig_name: str) -> str:
+            """Return a new name for an element or symbol, with prefix/suffix."""
+            if is_prefix:
+                return instance_name + "_" + orig_name
+            else:
+                return orig_name + "_" + instance_name
 
         # 1. Deep-copy all elements and build old→new mapping
         elem_map: dict[int, Node] = {}  # id(old_element) → new_element
         for elem in self.bondgraph.elements:
             new_elem = copy.deepcopy(elem)
-            new_elem.name = prefix + new_elem.name
+            new_elem.name = get_new_name(new_elem.name)
 
             # Prefix the symbolic value for one-port and two-port elements
             # (skip sensors whose value is empty/unused)
@@ -109,7 +118,7 @@ class SubBondGraph:
                 old_val = new_elem.value
                 if str(old_val):  # skip empty-value sensors
                     new_elem.value = sp.Symbol(
-                        prefix + str(old_val),
+                        get_new_name(str(old_val)),
                         real=True, positive=True,
                     )
                 new_elem.bond = None  # will be re-wired by parent
@@ -117,7 +126,7 @@ class SubBondGraph:
             elif isinstance(new_elem, ElementTwoPort):
                 old_val = new_elem.value
                 new_elem.value = sp.Symbol(
-                    prefix + str(old_val),
+                    get_new_name(str(old_val)),
                     real=True, positive=True,
                 )
                 new_elem.bond1 = None
@@ -137,7 +146,8 @@ class SubBondGraph:
                 from_element=new_from,
                 to_element=new_to,
                 causality=bond.causality,
-                prefix=prefix,
+                instance_name=instance_name,
+                is_prefix=is_prefix
             )
             parent_bondgraph.add_bond(new_bond)
 
