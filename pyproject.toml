@@ -1,6 +1,6 @@
 [project]
 name = "pyBondGraph"
-version = "0.2.1"
+version = "0.3.0"
 description = "Modelling tool for linear bond graph systems in Python"
 readme = "README.md"
 authors = [

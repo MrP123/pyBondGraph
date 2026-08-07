@@ -10,10 +10,15 @@ Bond graphs provide a **domain-independent modeling framework** for physical sys
 # Features
 
 * Programmatic construction of **bond graph models**
+* **Automatic causality assignment** via SCAP (Sequential Causality Assignment Procedure), with optional manual override or mixed mode
 * Automatic **symbolic equation derivation** using SymPy
-* Conversion of models to **state-space systems**
-* Example models for electrical and mechanical systems
-* Capaility to **store** and **load** bond graph models in JSON format construct bond graphs from loaded sub bond graphs
+* Conversion of models to **linear state-space systems** ($\dot{x} = Ax + Bu$, $y = Cx + Du$)
+* **Composable sub-models** via `SubBondGraph` with deep-copy namespace isolation
+* **Two-port elements**: Transformer and Gyrator with automatic causality propagation
+* **Sensor elements**: `IntegratedEffortSensor` and `IntegratedFlowSensor` for measuring integrated generalized variables (e.g. position from velocity)
+* **Domain-neutral aliases**: `Compliance` = `Capacitor`, `Inertance` = `Inductor`, `Resistance` = `Resistor`
+* Example models for electrical and electromechanical systems
+* Integration with **python-control** for numerical simulation (step response, Bode plots, etc.)
 
 ---
 
@@ -56,12 +61,12 @@ Optional dependencies are used for experimental visualization tools.
 ---
 
 # Basic Usage
-A bond graph model is constructed by creating elements and connecting them via bonds.
+A bond graph model is constructed by creating elements and connecting them via the `connect()` convenience method, which creates bonds and adds them to the graph in one step.
 
-Simple RC-Filter circuit:
+## RC-Filter with automatic causality (SCAP)
 
 ```python
-from pyBondGraph import BondGraph, SourceEffort, Resistor, Capacitor, OneJunction, Bond, Causality
+from pyBondGraph import BondGraph, SourceEffort, Resistor, Capacitor, OneJunction
 
 bg = BondGraph()
 
@@ -71,18 +76,19 @@ resistor = Resistor("R", "R")
 capacitor = Capacitor("C", "C")
 series_junction = OneJunction("J1")
 
-# connect elements
-# causalities need to be assigned manually ^
-bg.connect(voltage_source, series_junction, Causality.EFFORT_OUT)
-bg.connect(series_junction, resistor, Causality.EFFORT_OUT)
-bg.connect(series_junction, capacitor, Causality.FLOW_OUT)
+# connect elements --> causality is assigned automatically by SCAP
+bg.connect(voltage_source, series_junction)
+bg.connect(series_junction, resistor)
+bg.connect(series_junction, capacitor)
 
 # plot the resulting BondGraph
 bg.plot()
 
 # derive system equations in linear state space form
-A, B, C, D, x, n_states, n_inputs, n_outputs = bond_graph.get_state_space()
+A, B, C, D, x, n_states, n_inputs, n_outputs = bg.get_state_space()
 ```
+
+Causality can also be assigned **manually** by passing a `Causality` value to `connect()`, or in **mixed mode** where some bonds are fixed and SCAP resolves the rest.
 
 The library automatically derives the **symbolic system equations** describing the dynamics of the model.
 
@@ -101,6 +107,12 @@ Bond graphs represent **power exchange between system components**, where power 
 | Se      | Effort source                            |
 | Sf      | Flow source                              |
 
+## Two-Port Elements
+| Element     | Meaning                                                    |
+|-------------|------------------------------------------------------------|
+| TF          | Transformer — same causality on both bonds                 |
+| GY          | Gyrator — opposite causality on both bonds                 |
+
 ## Junctions
 | Junction | Meaning       |
 |----------|---------------|
@@ -114,10 +126,8 @@ Bond graphs represent **power exchange between system components**, where power 
 | IntegratedFlowSensor   | Measures integral of the flow at its bond   |
 
 In mechanical bond graph models:
-* **flow** corresponds to **velocity**
+* **flow** corresponds to **velocity**, i.e. an *IntegratedFlowSensor* can be used to compute **position**.
 * **effort** corresponds to **force**
-
-An **integrated flow sensor** can therefore be used to compute **position**:
 
 ---
 
@@ -128,13 +138,25 @@ The repository contains example models illustrating typical applications of bond
 Demonstrates modeling of an electrical circuit using bond graph elements.
 
 ### DC Motor
-A multi-domain electromechanical system coupling electrical and mechanical dynamics.
+A multi-domain electromechanical system coupling electrical and mechanical dynamics. Also demonstrates integration with the `python-control` package for numerical simulation (step response).
 
 ### Transformer
 Example of energy transformation between two ports.
 
 ### Two DOF Mass–Spring–Damper System
 Classical mass-spring-damper system with two degrees of freedom.
+
+---
+
+# Causality Assignment
+
+pyBondGraph supports three modes for assigning causality:
+
+1. **Automatic (SCAP)** — omit causality in `connect()` calls; `assign_causality()` is called automatically when solving. The Sequential Causality Assignment Procedure assigns causality in priority order: sources, storage elements (integral causality), resistors, then propagation through junctions and two-port elements.
+2. **Manual** — pass `Causality.EFFORT_OUT` or `Causality.FLOW_OUT` explicitly to each `connect()` call.
+3. **Mixed** — fix causality on some bonds, let SCAP resolve the rest.
+
+If a storage element cannot receive integral causality (which would imply a DAE rather than an ODE), a `DerivativeCausalityError` is raised with a clear diagnostic message.
 
 ---
 
@@ -146,3 +168,11 @@ Bond graph modeling is particularly useful for:
 * multi-domain energy systems
 * control system modeling
 * teaching system dynamics
+
+---
+
+# Planned Features
+
+* **FMU Export**: export bond graph models as Functional Mock-up Units (FMI standard) for interoperability with Simulink, Dymola, OpenModelica, and other FMI-compliant tools
+* **Nonlinear element support**: general nonlinear constitutive laws with Jacobian linearization
+* **Convenience bridge to python-control**: `to_control_ss(params)` method wrapping the existing manual pattern
