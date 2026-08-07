@@ -1,4 +1,4 @@
-from .core import Bond, Causality
+from .core import Bond, Causality, CausalityError, DerivativeCausalityError, Port  # port is a type alias: dict[str, Node]
 from .elements import (
     SourceEffort,
     SourceFlow,
@@ -15,7 +15,6 @@ from .elements import (
 )
 from .sensors import IntegratedEffortSensor, IntegratedFlowSensor
 from .subbondgraph import SubBondGraph
-from .core import Port  # type alias: dict[str, Node]
 
 from .bondgraph import BondGraph
 
@@ -39,4 +38,6 @@ __all__ = [
     "IntegratedFlowSensor",
     "Port",
     "SubBondGraph",
+    "CausalityError",
+    "DerivativeCausalityError",
 ]

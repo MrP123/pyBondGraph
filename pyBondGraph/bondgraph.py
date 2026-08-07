@@ -10,16 +10,8 @@ import matplotlib.pyplot as plt
 from collections.abc import Callable
 from typing import TYPE_CHECKING
 
-from .core import (
-    Causality,
-    Node,
-    StatefulElement,
-    Bond,
-    ElementOnePort,
-    ElementTwoPort,
-    Junction,
-)
-from .elements import SourceEffort, SourceFlow, OneJunction, ZeroJunction
+from .core import Causality, CausalityError, DerivativeCausalityError, Node, StatefulElement, Bond, ElementOnePort, ElementTwoPort, Junction
+from .elements import SourceEffort, SourceFlow, Capacitor, Inductor, Resistor, Transformer, Gyrator, OneJunction, ZeroJunction
 
 from .core import Port
 
@@ -94,58 +86,52 @@ class BondGraph:
     def __handle_bonds(self) -> None:
         """Handles the bonds in the bond graph by assigning them to the appropriate elements.
         This assignment propagates the bond references to the elements, so that each element knows which bonds it is connected to.
+
+        Iterates over each bond and calls _handle_element() for both the from_element and to_element
         """
 
-        def handle_bond_element(element: Node, bond: Bond):
-            """Internal helper function to handle the assignment of a bond to an element.
+        # Reset element bond references so that repeated calls are safe
+        for el in self.elements:
+            if isinstance(el, ElementOnePort):
+                el.bond = None
+            elif isinstance(el, ElementTwoPort):
+                el.bond1 = None
+                el.bond2 = None
+            elif isinstance(el, Junction):
+                el.bonds = []
+                el.strong_bond = None
+        
 
-            Parameters
-            ----------
-            element : Node
-                Element of the bond to handle. Must be called with both `from_element` and `to_element` of the bond.
-            bond : Bond
-                The bond to assign to the element.
-
-            Raises
-            ------
-            ValueError
-                If the element is a junction and it is attemped to add a second strong bond.
-            """
-
+        def _handle_element(element: Node, bond: Bond) -> None:
+            """Assign bond to element according to the element's type."""
             if isinstance(element, ElementOnePort):
                 element.bond = bond
 
             elif isinstance(element, ElementTwoPort):
-                if bond.to_element == element:
+                # bond1 = bond INTO the element, bond2 = bond FROM the element
+                if bond.to_element is element:
                     element.bond1 = bond
-                elif bond.from_element == element:
+                elif bond.from_element is element:
                     element.bond2 = bond
+                else:
+                    raise ValueError(f"Bond {bond} is not connected to ElementTwoPort {element}. You have called this function incorrectly.")
 
             elif isinstance(element, Junction):
-                element.bonds.append(bond)
+                if bond not in element.bonds:
+                    element.bonds.append(bond)
 
-                if isinstance(element, OneJunction):
-                    if (bond.from_element == element and bond.causality == Causality.EFFORT_OUT) or (bond.to_element == element and bond.causality == Causality.FLOW_OUT):
-                        # bond is strong bond for one junction
-                        if element.strong_bond is None:
-                            element.strong_bond = bond
-                            print(f"Assigned strong bond {bond} to OneJunction {element}.")
-                        else:
-                            raise ValueError(f"OneJunction {element} already has a strong bond: {element.strong_bond}. Cannot assign {bond}.")
+                if self._is_strong_for(bond, element):
+                    if element.strong_bond is None:
+                        element.strong_bond = bond
+                    else:
+                        raise ValueError(
+                            f"{type(element).__name__} {element} already has a strong bond: "
+                            f"{element.strong_bond}. Cannot assign {bond}."
+                        )
 
-                elif isinstance(element, ZeroJunction):
-                    if (bond.from_element == element and bond.causality == Causality.FLOW_OUT) or (bond.to_element == element and bond.causality == Causality.EFFORT_OUT):
-                        # bond is strong bond for zero junction
-                        if element.strong_bond is None:
-                            element.strong_bond = bond
-                            print(f"Assigned strong bond {bond} to ZeroJunction {element}.")
-                        else:
-                            raise ValueError(f"ZeroJunction {element} already has a strong bond: {element.strong_bond}. Cannot assign {bond}.")
-
-        # Call helper function for both elements of each bond
         for bond in self.bonds:
-            handle_bond_element(bond.from_element, bond)
-            handle_bond_element(bond.to_element, bond)
+            _handle_element(bond.from_element, bond)
+            _handle_element(bond.to_element, bond)
 
     def __handle_equations(self) -> None:
         """Accumulates the equations from all elements and junctions in the bond graph.
@@ -173,7 +159,7 @@ class BondGraph:
                 bond1 = element.bond1
                 bond2 = element.bond2
                 if bond1 is None or bond2 is None:
-                    raise ValueError(f"Element {element} has no connected bonds.")
+                    raise ValueError(f"Element {element} is not fully connected with bonds.")
 
                 # Add equations from the element to the bond graph
                 self.equations.extend(element.equations)
@@ -191,6 +177,10 @@ class BondGraph:
             A dictionary mapping each symbolic variable to its solved expression.
             The keys include the time derivatives of the state variables and the efforts and flows of all bonds.
         """
+
+        # Auto-assign causality if any bonds lack it
+        if any(b.causality is None for b in self.bonds):
+            self.assign_causality()
 
         self.__handle_bonds()
         self.__handle_equations()
@@ -303,7 +293,7 @@ class BondGraph:
         self,
         node_a: Node,
         node_b: Node,
-        causality: Causality = Causality.EFFORT_OUT,
+        causality: Causality | None = None,
     ) -> Bond:
         """Connect two nodes by adding a bond between them.
 
@@ -331,9 +321,11 @@ class BondGraph:
             Source — becomes ``from_element`` of the new bond.
         node_b : Node
             Destination — becomes ``to_element`` of the new bond.
-        causality : Causality, optional
-            Causality of the connecting bond.  Defaults to
-            ``Causality.EFFORT_OUT``.
+        causality : Causality | None, optional
+            Causality of the connecting bond.  Defaults to ``None``,
+            meaning causality will be assigned later by
+            :meth:`assign_causality` (SCAP).  Pass a ``Causality``
+            value explicitly to override automatic assignment.
 
         Returns
         -------
@@ -361,6 +353,241 @@ class BondGraph:
         )
         self.add_bond(bond)
         return bond
+
+    # --- shared helpers (used by both assign_causality and __handle_bonds) ---
+    def _elements_of_type(self, *types: type) -> list[Node]:
+        """Yield all elements that are instances of types."""
+        return [el for el in self.elements if isinstance(el, types)]
+
+    @staticmethod
+    def _is_strong_for(bond: Bond, junc: Junction) -> bool:
+        """Return True if bond is the strong bond at junc."""
+        if bond.causality is None:
+            return False
+        
+        if isinstance(junc, OneJunction):
+            return (
+                (bond.from_element is junc and bond.causality == Causality.EFFORT_OUT)
+                or (bond.to_element is junc and bond.causality == Causality.FLOW_OUT)
+            )
+        elif isinstance(junc, ZeroJunction):
+            return (
+                (bond.from_element is junc and bond.causality == Causality.FLOW_OUT)
+                or (bond.to_element is junc and bond.causality == Causality.EFFORT_OUT)
+            )
+        return False
+
+    @staticmethod
+    def _make_strong(bond: Bond, junc: Junction) -> Causality:
+        """Return the causality that makes bond the strong bond at junc."""
+        junc_is_from = bond.from_element is junc
+
+        if isinstance(junc, OneJunction):
+            return Causality.EFFORT_OUT if junc_is_from else Causality.FLOW_OUT
+        else:  # ZeroJunction
+            return Causality.FLOW_OUT if junc_is_from else Causality.EFFORT_OUT
+
+    @staticmethod
+    def _make_weak(bond: Bond, junc: Junction) -> Causality:
+        """Return the causality that makes bond a weak bond at junc.
+
+        This is the inverse of :meth:`_make_strong`.
+        """
+        # inverse mapping of strong to weak causality
+        strong_to_weak = {
+            Causality.EFFORT_OUT: Causality.FLOW_OUT,
+            Causality.FLOW_OUT: Causality.EFFORT_OUT,
+        }
+
+        strong = BondGraph._make_strong(bond, junc)
+
+        return strong_to_weak[strong]
+
+    def assign_causality(self) -> None:
+        """Run the Sequential Causality Assignment Procedure (SCAP).
+
+        Assigns causality to every bond that currently has
+        ``causality = None``.  Bonds whose causality was set explicitly
+        (manually or via ``add_bond`` / ``connect``) are respected as
+        fixed constraints.
+
+        The algorithm proceeds in priority order:
+
+        1. Sources: fixed causality (Se outputs effort, Sf outputs flow).
+        2. Storage elements: preferred integral causality (C outputs effort, I outputs flow).
+        3. Remaining bonds: assigned by propagation through junctions and two-port elements.
+
+        After each assignment the consequences are propagated through connected junctions
+        (exactly one strong bond each) and two-port elements
+        (transformer: same causality on both bonds; gyrator: opposite causality).
+
+        Raises
+        ------
+        DerivativeCausalityError
+            If a storage element cannot receive its preferred integral causality.
+            This indicates the system contains algebraic constraints (DAE instead of ODE) which are not supported.
+        CausalityError
+            If causality cannot be fully resolved (should not happen for a well-formed bond graph).
+        """
+
+        # Populate bond references on elements so we can use access them when assigning causality.
+        self.__handle_bonds()
+
+        # Track which bonds still need assignment
+        unassigned: set[Bond] = {b for b in self.bonds if b.causality is None}
+
+        if not unassigned:
+            return
+
+        def _assign(bond: Bond, causality: Causality) -> None:
+            """Assign causality to a bond and remove it from the unassigned set."""
+            bond.causality = causality
+            unassigned.discard(bond)
+
+        def _propagate() -> None:
+            """Propagate causality through junctions and two-port elements
+            until no further assignments can be made."""
+            if not unassigned:
+                return
+
+            changed = True
+            while changed:
+                changed = False
+
+                # Junctions: if any strong bond exists, all unassigned bonds must be weak
+                for junc in self._elements_of_type(Junction):
+                    assigned_bonds = [b for b in junc.bonds if b.causality is not None]
+                    unassigned_here = [b for b in junc.bonds if b.causality is None]
+                    if not unassigned_here:
+                        continue
+
+                    has_strong = any(self._is_strong_for(b, junc) for b in assigned_bonds)
+
+                    if has_strong:
+                        for b in unassigned_here:
+                            _assign(b, self._make_weak(b, junc))
+                            changed = True
+                    elif len(unassigned_here) == 1:
+                        _assign(unassigned_here[0], self._make_strong(unassigned_here[0], junc))
+                        changed = True
+
+                # Two-port elements: if one bond has causality, the other must be assigned accordingly
+                for tp_elem in self._elements_of_type(ElementTwoPort):
+                    b1, b2 = tp_elem.bond1, tp_elem.bond2
+                    if b1 is None or b2 is None:
+                        continue
+
+                    src, dst = None, None
+                    if b1.causality is not None and b2.causality is None:
+                        src, dst = b1, b2
+                    elif b2.causality is not None and b1.causality is None:
+                        src, dst = b2, b1
+                    else:
+                        continue
+
+                    if isinstance(tp_elem, Transformer):
+                        _assign(dst, src.causality)
+                    else:  # Gyrator — opposite causality
+                        opp = Causality.FLOW_OUT if src.causality == Causality.EFFORT_OUT else Causality.EFFORT_OUT
+                        _assign(dst, opp)
+                    changed = True
+
+                if not unassigned:
+                    return
+
+        def _desired_causality(element: ElementOnePort, bond: Bond) -> Causality:
+            """Return the causality the element wants (from from_element perspective)."""
+            el_is_from = bond.from_element is element
+            if isinstance(element, (SourceEffort, Capacitor)):
+                return Causality.EFFORT_OUT if el_is_from else Causality.FLOW_OUT
+            elif isinstance(element, (SourceFlow, Inductor)):
+                return Causality.FLOW_OUT if el_is_from else Causality.EFFORT_OUT
+            return None
+
+        def _would_conflict_with_junction(bond: Bond, causality: Causality) -> bool:
+            """Check if assigning *causality* to *bond* would create a
+            second strong bond at any connected junction."""
+            for el in bond.elements:
+                if not isinstance(el, Junction):
+                    continue
+                # Temporarily check what this would mean
+                old = bond.causality
+                bond.causality = causality
+                is_strong = self._is_strong_for(bond, el)
+                bond.causality = old
+                if is_strong:
+                    other_bonds = [b for b in el.bonds if b is not bond and b.causality is not None]
+                    if any(self._is_strong_for(ob, el) for ob in other_bonds):
+                        return True
+            return False
+
+        # --- Phase 1: Sources (fixed causality) -----------------------------
+        for elem in self._elements_of_type(SourceEffort, SourceFlow):
+            if elem.bond.causality is None:
+                _assign(elem.bond, _desired_causality(elem, elem.bond))
+        _propagate()
+
+        # --- Phase 2: Storage elements (integral causality) -----------------
+        for elem in self._elements_of_type(Capacitor, Inductor):
+            if elem.bond.causality is not None:
+                continue
+            desired = _desired_causality(elem, elem.bond)
+            if not _would_conflict_with_junction(elem.bond, desired):
+                _assign(elem.bond, desired)
+            else:
+                raise DerivativeCausalityError(
+                    f"Storage element '{elem.name}' ({type(elem).__name__}) "
+                    f"cannot receive its preferred integral causality "
+                    f"because a connected junction already has a strong bond. "
+                    f"This forces derivative causality, turning the system "
+                    f"into a DAE (differential-algebraic equation) which is "
+                    f"not supported.\n"
+                    f"Suggestion: insert a resistive element (R) between "
+                    f"conflicting storage elements, or restructure the model."
+                )
+        _propagate()
+
+        # --- Phase 3: Resistors and remaining bonds -------------------------
+        for elem in self._elements_of_type(Resistor):
+            if elem.bond.causality is not None:
+                continue
+            bond = elem.bond
+            # Determine from the connected junction what this bond needs
+            other_el = bond.to_element if bond.from_element is elem else bond.from_element
+            if isinstance(other_el, Junction):
+                assigned_bonds = [b for b in other_el.bonds if b.causality is not None]
+                has_strong = any(self._is_strong_for(b, other_el) for b in assigned_bonds)
+                if has_strong:
+                    _assign(bond, self._make_weak(bond, other_el))
+                elif len([b for b in other_el.bonds if b.causality is None]) == 1:
+                    # if this is the only unassigned bond at the junction, it must be strong
+                    _assign(bond, self._make_strong(bond, other_el))
+        _propagate()
+
+        # --- Validate: two-port causality consistency -----------------------
+        for tp_elem in self._elements_of_type(ElementTwoPort):
+            b1, b2 = tp_elem.bond1, tp_elem.bond2
+            if b1 is None or b2 is None:
+                continue
+            if isinstance(tp_elem, Transformer) and b1.causality != b2.causality:
+                raise CausalityError(
+                    f"Transformer '{tp_elem.name}' requires both bonds to have the "
+                    f"same causality, but bond1={b1.causality} and bond2={b2.causality}."
+                )
+            if isinstance(tp_elem, Gyrator) and b1.causality == b2.causality:
+                raise CausalityError(
+                    f"Gyrator '{tp_elem.name}' requires both bonds to have different "
+                    f"causality, but both are {b1.causality}."
+                )
+
+        # --- Validate: unassigned bonds -------------------------------------
+        if unassigned:
+            descriptions = [f"  Bond({b.from_element.name} -> {b.to_element.name})" for b in unassigned]
+            raise CausalityError(
+                f"SCAP could not assign causality to {len(unassigned)} bond(s):\n"
+                + "\n".join(descriptions)
+                + "\nCheck that the bond graph is fully connected and well-formed."
+            )
 
     def plot(self, layout: Callable[[nx.Graph, ...], dict] = nx.spectral_layout, **kwargs) -> tuple[plt.Figure, plt.Axes]:
         """Plots the bond graph as a `networkx` graph.
@@ -432,7 +659,7 @@ class BondGraph:
         for edge_idx, (u, v, data) in enumerate(G.edges(data=True)):
             x1, y1 = pos[u]
             x2, y2 = pos[v]
-            # Vary the parameter t ∈ [0.35, 0.65] per edge
+            # Vary the parameter t \in [0.35, 0.65] per edge
             t = 0.35 + 0.3 * ((edge_idx * 7 + 3) % 11) / 10.0
             lx = x1 + t * (x2 - x1)
             ly = y1 + t * (y2 - y1)
@@ -469,7 +696,7 @@ class BondGraph:
                 If the 'at' parameter is not "head" or "tail".
             """
 
-            # --- Convert node size (points^2) to radius in pixels ---
+            # Convert node size (points^2, i.e. area) to radius in pixels
             radius_points = np.sqrt(node_size / np.pi)
             radius_pixels = radius_points * ax.figure.dpi / 72.0  # 1 point = 1/72 inch
             offset = radius_pixels + padding   # + padding (in px) so stroke sits outside node
@@ -515,6 +742,8 @@ class BondGraph:
                 _stroke_specs.append((pos[u], pos[v], "head", -2))
             elif causality is Causality.FLOW_OUT:
                 _stroke_specs.append((pos[u], pos[v], "tail", -2))
+            elif causality is None:
+                pass  # No causality assigned yet — skip causal stroke
             else:
                 raise ValueError(f"Edge {u}->{v} has no valid causality: {causality} --> this should never happen!")
 

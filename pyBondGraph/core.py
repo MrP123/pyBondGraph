@@ -17,6 +17,20 @@ class Causality(Enum):
     FLOW_OUT = "flow_out"
 
 
+class CausalityError(Exception):
+    """Raised when automatic causality assignment (SCAP) fails."""
+    pass
+
+
+class DerivativeCausalityError(CausalityError):
+    """Raised when a storage element would require derivative causality.
+
+    Derivative causality turns the system into a DAE (differential-algebraic equation) which cannot directly be transformed into state-space representation.
+    Consider adding a small resistance (or the like) between conflicting storage elements or restructuring the model.
+    """
+    pass
+
+
 class StatefulElement(ABC):
     """Base class for all stateful elements (capacitor, inductor) in the bond graph.
     Requires implementation of a `state_var` property that returns the symbolic state variable associated with the element.
@@ -51,7 +65,15 @@ class Bond:
 
     _counter = 0  # Global fallback counter; prefer BondGraph-scoped numbering
 
-    def __init__(self, from_element: Node, to_element: Node, causality: str | Causality, num: int | None = None, instance_name: str = "", is_prefix: bool = True):
+    def __init__(
+        self,
+        from_element: Node,
+        to_element: Node,
+        causality: str | Causality | None = None,
+        num: int | None = None,
+        instance_name: str = "",
+        is_prefix: bool = True,
+    ):
         """Create a bond between two elements with specified causality.
         The positive direction of this power bond is from `from_element` to `to_element`.
         Efforts and flows are represented by symbolic `sympy.Symbol`s that are strictly real-valued.
@@ -62,7 +84,7 @@ class Bond:
             The element where the bond originates.
         to_element : Node
             The element where the bond terminates.
-        causality : str | Causality
+        causality : str | Causality | None, optional
             The causality of the bond, either `effort_out` or `flow_out`.
             If a string is provided, it is converted to the corresponding `Causality` enum.
             This definition is always from the perspective of the `from_element`.
@@ -70,6 +92,7 @@ class Bond:
             `OneJunction` imposes effort on the `Inductor`, meaning it has an equivalent `effort_in` causality.
             Likewise a `Bond(OneJunction(...), Capacitor(...), "flow_out")` means that the `OneJunction` imposes
             flow on the `Capacitor`, meaning it has an equivalent `flow_in`/`effort_out` causality.
+            If None, the causality must be assigned later by calling (manually or automatically) the bond graph's causality assignment algorithm.
         num : int | None, optional
             Explicit bond number. If None, the global fallback counter is used.
             When bonds are added to a BondGraph, the graph manages numbering.
@@ -89,10 +112,11 @@ class Bond:
         self.to_element = to_element
 
         if isinstance(causality, str):
-            causality = Causality(causality.lower()) # Convert string to Causality enum, case insensitive
+            causality = Causality(causality.lower())
+            # Convert string to Causality enum, case insensitive
             # --> automatically raises ValueError if string is not valid
 
-        self.causality: Causality = causality
+        self.causality: Causality | None = causality
 
         if num is None:
             self.num = Bond._counter
@@ -114,7 +138,12 @@ class Bond:
         """tuple[Node, Node]: The two elements connected by the bond. First element is `from_element`, second is `to_element`."""
         return (self.from_element, self.to_element)
 
-    def rename_symbols(self, new_num: int | None = None, new_instance_name: str | None = None, is_prefix: bool = True) -> dict[sp.Symbol, sp.Symbol]:
+    def rename_symbols(
+        self,
+        new_num: int | None = None,
+        new_instance_name: str | None = None,
+        is_prefix: bool = True,
+    ) -> dict[sp.Symbol, sp.Symbol]:
         """Rename the effort/flow symbols of this bond and return the substitution map.
         This is used during sub-model merging to avoid symbol collisions.
 
@@ -140,13 +169,12 @@ class Bond:
         if new_instance_name is not None:
             self.instance_name = new_instance_name
 
-
         if is_prefix:
             padded_name = "_" + self.instance_name + "_" if self.instance_name != "" else "_"
             self.effort = sp.Symbol(f"e{padded_name}{self.num}", real=True)
             self.flow = sp.Symbol(f"f{padded_name}{self.num}", real=True)
         else:
-            padded_name = self.instance_name if self.instance_name != "" else "" # conditional can be skipped            
+            padded_name = self.instance_name if self.instance_name != "" else ""  # conditional can be skipped
             self.effort = sp.Symbol(f"e_{self.num}{padded_name}", real=True)
             self.flow = sp.Symbol(f"f_{self.num}{padded_name}", real=True)
 
@@ -198,7 +226,9 @@ class ElementOnePort(Node, ABC):
         """
 
         super().__init__(name)
-        self.value = sp.Symbol(value, real=True, positive=True)  # Ensure value is a positive real number
+        self.value = sp.Symbol(
+            value, real=True, positive=True
+        )  # Ensure value is a positive real number
         self.bond: Bond = None  # bond that connects this element to a bond graph
 
     @property
