@@ -1,4 +1,4 @@
-from pyBondGraph import BondGraph, Causality, SourceEffort, Inductor, Resistor, OneJunction, Gyrator
+from pyBondGraph import BondGraph, SourceEffort, Inductor, Resistor, OneJunction, Gyrator
 
 import sympy as sp
 import numpy as np
@@ -16,13 +16,15 @@ junction_mech = OneJunction("J1_2")
 bearing = Resistor("R_mech", "R_B")
 inertia = Inductor("I_mech", "J")
 
-bond_graph.connect(voltage_source, junction_elec, Causality.EFFORT_OUT)
-bond_graph.connect(junction_elec, resistor, Causality.FLOW_OUT)
-bond_graph.connect(junction_elec, inductor, Causality.EFFORT_OUT)
-bond_graph.connect(junction_elec, gyrator, Causality.FLOW_OUT)
-bond_graph.connect(gyrator, junction_mech, Causality.EFFORT_OUT)
-bond_graph.connect(junction_mech, bearing, Causality.FLOW_OUT)
-bond_graph.connect(junction_mech, inertia, Causality.EFFORT_OUT)
+bond_graph.connect(voltage_source, junction_elec)
+bond_graph.connect(junction_elec, resistor)
+bond_graph.connect(junction_elec, inductor)
+bond_graph.connect(junction_elec, gyrator)
+bond_graph.connect(gyrator, junction_mech)
+bond_graph.connect(junction_mech, bearing)
+bond_graph.connect(junction_mech, inertia)
+
+bond_graph.assign_causality()
 
 A, B, C, D, x, n_states, n_inputs, n_outputs = bond_graph.get_state_space()
 
@@ -91,16 +93,52 @@ ax1.set_ylabel("Efforts (V, N, Nm, Pa)")
 ax2.set_ylabel("Currents (A, m/s, rad/s, m^3/s)")
 ax3.set_ylabel("States (Wb for p_elec and rad for p_mech)")
 
+lines = []
 
 for i, signal in enumerate(yout):
     if i < n_outputs // 2:
-        ax1.plot(T, signal, label=f"e_{i}")
+        l = ax1.plot(T, signal, label=f"e_{i}")
+        lines.extend(l)
     else:
-        ax2.plot(T, signal, label=f"f_{i - n_outputs // 2}")
+        l = ax2.plot(T, signal, label=f"f_{i - n_outputs // 2}")
+        lines.extend(l)
 
-ax3.plot(T, xout.T, label=[sp.pretty(st) for st in bond_graph.state_vars])
+l = ax3.plot(T, xout.T, label=[sp.pretty(st) for st in bond_graph.state_vars])
+lines.extend(l)
 
-ax1.legend()
-ax2.legend()
-ax3.legend()
+#https://matplotlib.org/stable/gallery/event_handling/legend_picking.html
+legend_lines = []
+for ax in [ax1, ax2, ax3]:
+    legend = ax.legend()
+    legend_lines.extend(legend.get_lines())
+
+map_legend_to_ax: dict[plt.Line2D, plt.Line2D] = {}
+for legend_line, ax_line in zip(legend_lines, lines):
+    legend_line.set_picker(5)
+    map_legend_to_ax[legend_line] = ax_line
+
+def on_pick(event):
+    # On the pick event, find the original line corresponding to the legend
+    # proxy line, and toggle its visibility.
+    legend_line = event.artist
+
+    # Do nothing if the source of the event is not a legend line.
+    if legend_line not in map_legend_to_ax:
+        return
+
+    ax_line = map_legend_to_ax[legend_line]
+    visible = not ax_line.get_visible()
+    ax_line.set_visible(visible)
+    
+    # Rescale to visible data only
+    ax_line.axes.relim(visible_only=True)
+    ax_line.axes.autoscale_view(scalex=True, scaley=True)
+
+    # Change the alpha on the line in the legend, so we can see what lines
+    # have been toggled.
+    legend_line.set_alpha(1.0 if visible else 0.2)
+    fig.canvas.draw()
+
+fig.canvas.mpl_connect('pick_event', on_pick)
+
 plt.show()
