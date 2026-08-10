@@ -14,6 +14,7 @@ from .core import Causality, CausalityError, DerivativeCausalityError, Node, Sta
 from .elements import SourceEffort, SourceFlow, Capacitor, Inductor, Resistor, Transformer, Gyrator, OneJunction, ZeroJunction
 
 from .core import Port
+from .numerics import to_numpy, to_control_ss
 
 if TYPE_CHECKING:
     from .subbondgraph import SubBondGraph
@@ -264,6 +265,118 @@ class BondGraph:
         # alternatively could use sp.linear_eq_to_matrix(...)
 
         return A, B, C, D, sp.Matrix(self.state_vars), n_states, n_inputs, n_outputs
+
+    def get_substitution_dict(self, overrides: dict[sp.Symbol, float] | None = None) -> dict[sp.Symbol, float]:
+        """Build a substitution dictionary from elements that have a ``numeric_value`` set.
+
+        Iterates over all :class:`ElementOnePort` and :class:`ElementTwoPort` elements
+        in the bond graph and maps each element's symbolic ``value`` to its ``numeric_value``.
+        Elements without a ``numeric_value`` (i.e. ``None``) are silently skipped.
+
+        Parameters
+        ----------
+        overrides : dict[sp.Symbol, float] | None, optional
+            Additional or overriding entries merged into the result.
+            This is useful for parameter sweeps or for supplying values
+            that are not stored on the elements (e.g. external inputs).
+
+        Returns
+        -------
+        dict[sp.Symbol, float]
+            Mapping from symbolic parameter to numeric value.
+
+        Raises
+        ------
+        ValueError
+            If any element with a ``numeric_value`` would overwrite an
+            already-collected symbol with a *different* value (duplicate
+            symbols with the same numeric value are fine).
+        """
+        subs: dict[sp.Symbol, float] = {}
+
+        for elem in self.elements:
+
+            if isinstance(elem, (ElementOnePort, ElementTwoPort)) and elem.numeric_value is not None:
+                if elem.value in subs and subs[elem.value] != elem.numeric_value:
+                    raise ValueError(
+                        f"Conflicting numeric values for symbol '{elem.value}': "
+                        f"{subs[elem.value]} vs {elem.numeric_value} (element '{elem.name}')."
+                    )
+                
+                subs[elem.value] = elem.numeric_value
+
+        # update dict with manually provded overrides (if any)
+        if overrides:
+            subs.update(overrides)
+
+        return subs
+
+    def get_numeric_state_space(
+        self,
+        subs: dict[sp.Symbol, float] | None = None,
+    ) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+        """Return the numeric (numpy) state-space matrices ``(A, B, C, D)``.
+
+        This is a convenience wrapper around :meth:`get_state_space` that
+        substitutes numeric parameter values and converts the resulting
+        symbolic matrices to :class:`numpy.ndarray`.
+
+        Parameters
+        ----------
+        subs : dict[sp.Symbol, float] | None, optional
+            Explicit substitution dictionary.  If ``None``,
+            :meth:`get_substitution_dict` is called to collect the values
+            stored on the elements.  If provided, it is used as-is (no
+            merging with element values).
+
+        Returns
+        -------
+        tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]
+            Numeric matrices ``(A, B, C, D)``.
+
+        Raises
+        ------
+        ValueError
+            If the symbolic state-space cannot be computed, or if free
+            symbols remain after substitution (i.e. some parameters have
+            no numeric value).
+        """
+        A, B, C, D, _x, _ns, _ni, _no = self.get_state_space()
+
+        if subs is None:
+            subs = self.get_substitution_dict()
+
+        # Check for remaining free symbols before conversion
+        free = set()
+        for M in (A, B, C, D):
+            free |= M.free_symbols
+        remaining = free - set(subs.keys())
+
+        if remaining:
+            raise ValueError(
+                f"The following symbols have no numeric value: {remaining}. "
+                f"Set numeric_value on the corresponding elements or pass them via the subs parameter."
+            )
+
+        return tuple(to_numpy(M, subs) for M in (A, B, C, D))
+    
+    def to_control_ss(self):
+        """Generate a control.StateSpace object from the bond graph's numeric state-space matrices.
+
+        Returns
+        -------
+        control.StateSpace
+            The :class:`control.StateSpace` object representing the bond graph's linear dynamics.
+
+        Raises
+        ------
+        ValueError
+            Raises a value error through :meth:`get_numeric_state_space` if not all numerical values required are set beforehand in the bondgraph elements            
+        """
+
+        matrices = self.get_numeric_state_space()
+        return to_control_ss(*matrices)
+        
 
     def add_subbondgraph(self, sub_bondgraph: SubBondGraph, instance_name: str | None = None, is_prefix: bool = True) -> Port:
         """Instantiate a SubBondGraph into this bond graph.

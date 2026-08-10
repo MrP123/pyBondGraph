@@ -213,7 +213,7 @@ class ElementOnePort(Node, ABC):
     This can also be just one equation.
     """
 
-    def __init__(self, name: str, value: str):
+    def __init__(self, name: str, value: str, numeric_value: float | None = None):
         """ABC for a one-port element. Acts as base class for all one-port elements like Inductor, Capacitor, Resistor, SourceEffort, SourceFlow.
         Stores an associated bond and a symbolic value (real and positive) for its defining characteristics e.g. resistance, capacitance, etc.
 
@@ -223,12 +223,16 @@ class ElementOnePort(Node, ABC):
             The name of the element. Will be shown on the bond graph plot.
         value : str
             The name of the value associated with the element, is internally used for creating a `sympy.Symbol`.
+        numeric_value : float | None, optional
+            Numeric value for the element parameter. If provided, it is used
+            when building substitution dictionaries for numeric evaluation.
         """
 
         super().__init__(name)
         self.value = sp.Symbol(
             value, real=True, positive=True
         )  # Ensure value is a positive real number
+        self.numeric_value: float | None = numeric_value
         self.bond: Bond = None  # bond that connects this element to a bond graph
 
     @property
@@ -246,7 +250,7 @@ class ElementTwoPort(Node, ABC):
     Requires implementation of an `equations` property that returns the list of symbolic equations defining the element's behavior.
     """
 
-    def __init__(self, name: str, value: str):
+    def __init__(self, name: str, value: str, numeric_value: float | None = None):
         """ABC for a two-port element. Acts as base class for all two-port elements like Transformer, Gyrator.
         Stores two associated bonds and a symbolic value (real and positive) for its defining characteristics e.g. conversion factor, ratio, etc.
 
@@ -256,10 +260,14 @@ class ElementTwoPort(Node, ABC):
             The name of the element. Will be shown on the bond graph plot.
         value : str
             The name of the value associated with the element, is internally used for creating a `sympy.Symbol`.
+        numeric_value : float | None, optional
+            Numeric value for the element parameter. If provided, it is used
+            when building substitution dictionaries for numeric evaluation.
         """
 
         super().__init__(name)
         self.value = sp.Symbol(value, real=True, positive=True)
+        self.numeric_value: float | None = numeric_value
         self.bond1: Bond = None  # ElementOther   --(bond1)--> ElementTwoPort
         self.bond2: Bond = None  # ElementTwoPort --(bond2)--> ElementOther
 

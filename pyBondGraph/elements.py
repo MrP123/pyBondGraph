@@ -53,7 +53,7 @@ class Capacitor(ElementOnePort, StatefulElement):
     A capacitance relates the effort of its port with the integral of its flow by a constant capacitance value.
     """
 
-    def __init__(self, name: str, value: str):
+    def __init__(self, name: str, value: str, numeric_value: float = None):
         """Create a linear compliance/capacitance element in the bond graph.
 
         Parameters
@@ -62,8 +62,10 @@ class Capacitor(ElementOnePort, StatefulElement):
             The name of the element. Forwarded to the `Node` base class.
         value : str
             The name of the element value, is internally used for creating a `sympy.Symbol`.
+        numeric_value : float, optional
+            The numeric value of the capacitance, used for numerical simulations.
         """
-        super().__init__(name, value)
+        super().__init__(name, value, numeric_value)
 
     @property
     def state_var(self) -> sp.Symbol:
@@ -102,7 +104,7 @@ class Inductor(ElementOnePort, StatefulElement):
     An inductor relates the flow of its port with the integral of its effort by a constant inductance value.
     """
 
-    def __init__(self, name: str, value: str):
+    def __init__(self, name: str, value: str, numeric_value: float = None):
         """Create a linear inertia/inductance element in the bond graph.
 
         Parameters
@@ -111,8 +113,10 @@ class Inductor(ElementOnePort, StatefulElement):
             The name of the element. Forwarded to the `Node` base class.
         value : str
             The name of the element value, is internally used for creating a `sympy.Symbol`.
+        numeric_value : float, optional
+            The numeric value of the inductance, used for numerical simulations.
         """
-        super().__init__(name, value)
+        super().__init__(name, value, numeric_value)
 
     @property
     def state_var(self) -> sp.Symbol:
@@ -151,7 +155,7 @@ class Resistor(ElementOnePort):
     A resistor relates the effort and flow of its port by a constant resistance value.
     """
 
-    def __init__(self, name: str, value: str):
+    def __init__(self, name: str, value: str, numeric_value: float = None):
         """Create a linear resistance element.
 
         Parameters
@@ -160,8 +164,10 @@ class Resistor(ElementOnePort):
             The name of the resistance. Forwarded to the `Node` base class.
         value : str
             The name of the resistance value, is internally used for creating a `sympy.Symbol`.
+        numeric_value : float, optional
+            The numeric value of the resistance, used for numerical simulations.
         """
-        super().__init__(name, value)
+        super().__init__(name, value, numeric_value)
 
     @property
     def equations(self) -> list[sp.Expr]:
@@ -190,7 +196,7 @@ class Transformer(ElementTwoPort):
     A transformer relates the efforts of its two ports and the flows of its two ports by a constant ratio.
     """
 
-    def __init__(self, name: str, value: str):
+    def __init__(self, name: str, value: str, numeric_value: float = None):
         """Create a transformer element in the bond graph.
 
         Parameters
@@ -199,8 +205,10 @@ class Transformer(ElementTwoPort):
             The name of the element. Forwarded to the `Node` base class.
         value : str
             The name of the element value, is internally used for creating a `sympy.Symbol`.
+        numeric_value : float, optional
+            The numeric value of the transformer ratio, used for numerical simulations.
         """
-        super().__init__(name, value)
+        super().__init__(name, value, numeric_value)
 
     @property
     def equations(self) -> list[sp.Expr]:
@@ -242,7 +250,7 @@ class Gyrator(ElementTwoPort):
     A gyrator relates the effort of one port with the flow of the other (and vice versa) by a constant ratio.
     """
 
-    def __init__(self, name: str, value: str):
+    def __init__(self, name: str, value: str, numeric_value: float = None):
         """Create a gyrator element in the bond graph.
 
         Parameters
@@ -251,8 +259,10 @@ class Gyrator(ElementTwoPort):
             The name of the element. Forwarded to the `Node` base class.
         value : str
             The name of the element value, is internally used for creating a `sympy.Symbol`.
+        numeric_value : float, optional
+            The numeric value of the gyrator ratio, used for numerical simulations.
         """
-        super().__init__(name, value)
+        super().__init__(name, value, numeric_value)
 
     @property
     def equations(self) -> list[sp.Expr]:

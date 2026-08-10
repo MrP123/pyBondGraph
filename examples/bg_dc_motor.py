@@ -41,37 +41,18 @@ sp.pprint(D)
 fig, ax = bond_graph.plot()
 fig.show()
 
+resistor.numeric_value = 4
+inductor.numeric_value = 15e-6
+gyrator.numeric_value = 9.54e-3
+inertia.numeric_value = 1e-6
+bearing.numeric_value = 1e-6
 
-U_A_val = 5.0
-R_A_val = 4
-L_A_val = 15e-6
-K_t_val = 9.54e-3
-J_val = 1e-6
-R_B_val = 1e-6
+A_mat_val, B_mat_val, C_mat_val, D_mat_val = bond_graph.get_numeric_state_space()
 
-# ToDo: maybe make numeric value part of the element class?
-subs_dict = {
-    voltage_source.value: U_A_val,
-    resistor.value: R_A_val,
-    inductor.value: L_A_val,
-    gyrator.value: K_t_val,
-    inertia.value: J_val,
-    bearing.value: R_B_val,
-}
+sys = bond_graph.to_control_ss()
+print(sys.nstates)
+x0_val = np.zeros_like((sys.nstates, 1))
 
-
-def to_numpy(M: sp.Matrix, subs: dict) -> np.ndarray:
-    return np.array(M.subs(subs), dtype=np.float64)
-
-
-A_mat_val = to_numpy(A, subs_dict)
-B_mat_val = to_numpy(B, subs_dict)
-C_mat_val = to_numpy(C, subs_dict)
-D_mat_val = to_numpy(D, subs_dict)
-
-x0_val = np.zeros_like(A_mat_val[0, :])
-
-sys = ctrl.ss(A_mat_val, B_mat_val, C_mat_val, D_mat_val)
 time_response: ctrl.TimeResponseData = ctrl.step_response(sys, T=0.5, X0=x0_val)
 T, yout, xout = time_response.time, time_response.outputs, time_response.states
 

@@ -18,6 +18,8 @@ from .subbondgraph import SubBondGraph
 
 from .bondgraph import BondGraph
 
+from .numerics import to_numpy, to_control_ss
+
 __all__ = [
     "Bond",
     "Causality",
@@ -40,4 +42,6 @@ __all__ = [
     "SubBondGraph",
     "CausalityError",
     "DerivativeCausalityError",
+    "to_numpy",
+    "to_control_ss",
 ]
