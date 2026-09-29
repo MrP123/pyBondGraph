@@ -26,7 +26,10 @@ bond_graph.connect(junction_mech, inertia)
 
 bond_graph.assign_causality()
 
+print(bond_graph.get_solution_equations())
+
 A, B, C, D, x, n_states, n_inputs, n_outputs = bond_graph.get_state_space()
+
 
 # Print results
 print("\nState vector x:")
