@@ -3,3 +3,4 @@ networkx>=3.5
 numpy>=2.3.0
 matplotlib>=3.10.3
 control>=0.10.2
+pythonfmu3>=0.3.4
