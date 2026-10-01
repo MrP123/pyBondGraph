@@ -20,6 +20,8 @@ from .bondgraph import BondGraph
 
 from .numerics import to_numpy, to_control_ss
 
+from .fmu_export import to_fmu
+
 __all__ = [
     "Bond",
     "Causality",
@@ -44,4 +46,5 @@ __all__ = [
     "DerivativeCausalityError",
     "to_numpy",
     "to_control_ss",
+    "to_fmu",
 ]

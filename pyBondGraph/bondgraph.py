@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from pathlib import Path
+
 import sympy as sp
 import networkx as nx
 import numpy as np
@@ -15,6 +17,7 @@ from .elements import SourceEffort, SourceFlow, Capacitor, Inductor, Resistor, T
 
 from .core import Port
 from .numerics import to_numpy, to_control_ss
+from .fmu_export import to_fmu
 
 if TYPE_CHECKING:
     from .subbondgraph import SubBondGraph
@@ -376,7 +379,16 @@ class BondGraph:
 
         matrices = self.get_numeric_state_space()
         return to_control_ss(*matrices)
-        
+
+
+
+    def to_fmu(self, model_name: str = "BondGraphExport", dest: str | Path = ".", author_name: str = "MtP", description: str = "A bond graph model.", keep_slave_python_code: bool = False) -> None:
+        # if default class name is used, use the bondgraph name if it is set
+        if model_name == "BondGraphExport" and self.name:
+            model_name = self.name
+
+        to_fmu(self, dest=dest, class_name=model_name, author_name=author_name, description=description, keep_slave_python_code=keep_slave_python_code)
+
 
     def add_subbondgraph(self, sub_bondgraph: SubBondGraph, instance_name: str | None = None, is_prefix: bool = True) -> Port:
         """Instantiate a SubBondGraph into this bond graph.
