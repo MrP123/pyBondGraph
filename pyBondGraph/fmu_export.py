@@ -1,161 +1,221 @@
-from pythonfmu3 import Fmi3Causality, Fmi3SlaveBase, Fmi3Variability, Fmi3Initial, Float64, ModelExchange
-from typing import List
+"""Build-time generator for a self-contained Model-Exchange FMU of a bond graph.
 
-from pyBondGraph import BondGraph, Causality, SourceEffort, Inductor, Resistor, OneJunction, Gyrator
+The problem with keeping the symbolic matrices + ``sympy.lambdify`` inside the
+slave's ``__init__`` is that *all* of that code runs at FMU **instantiation**
+time -- i.e. inside Simulink. That forces the Python interpreter Simulink picks
+up to have ``sympy`` AND ``pyBondGraph`` (and their dependencies) importable,
+which is fragile and hard to reproduce outside the development ``.venv``.
+
+This module instead does *all* symbolic work here, at build time, and emits a
+self-contained slave module (``fmu_slave.py``) whose only runtime imports are
+the standard library (``math``) and ``pythonfmu3`` (which the FMU bundles its
+own runtime for). No sympy, no pyBondGraph at runtime.
+
+Parameters stay genuinely live: the generated matrix functions take the
+parameters as arguments, and the slave re-evaluates them every derivative step
+from the current parameter attributes. So changing a parameter from Simulink
+still changes the dynamics -- nothing is baked in at export time.
+
+Usage::
+
+    python pyBondGraph/fmu_export.py        # writes fmu_slave.py and builds the FMU
+"""
+
+from pathlib import Path
+
 import sympy as sp
 
+from pyBondGraph import BondGraph, SourceEffort, Inductor, Resistor, OneJunction, Gyrator
 
-class BondGraphSlave(Fmi3SlaveBase, ModelExchange):
-    """Generic Model-Exchange FMU wrapper for an arbitrary (linear) bond graph.
 
-    The only model-specific part is :meth:`build_bond_graph`. Everything else
-    (state/derivative/output/parameter registration and the runtime evaluation
-    of the state-space equations) is derived automatically from the bond graph.
+# -----------------------------------------------------------------------------
+# Model definition (the only hardcoded part)
+# -----------------------------------------------------------------------------
+def build_bond_graph() -> BondGraph:
+    """Build and return the bond graph to be exported.
 
-    Model parameters are kept *symbolic* and the state-space matrices are
-    evaluated at runtime from the current parameter attribute values via
-    ``sympy.lambdify``. This means changing a parameter from the outside
-    (e.g. from Simulink) actually changes the dynamics, instead of the values
-    being baked in once at export time.
+    Swap the body of this function to export a different model; everything
+    downstream is fully generic.
     """
+    bond_graph = BondGraph()
+
+    voltage_source = SourceEffort("V", "U_in")
+    junction_elec = OneJunction("J1_1")
+    inductor = Inductor("I_elec", "L_A", numeric_value=15e-6)
+    resistor = Resistor("R_elec", "R_A", numeric_value=4)
+    gyrator = Gyrator("G1", "K_t", numeric_value=9.54e-3)
+    junction_mech = OneJunction("J1_2")
+    bearing = Resistor("R_mech", "R_B", numeric_value=1e-6)
+    inertia = Inductor("I_mech", "J", numeric_value=1e-6)
+
+    bond_graph.connect(voltage_source, junction_elec)
+    bond_graph.connect(junction_elec, resistor)
+    bond_graph.connect(junction_elec, inductor)
+    bond_graph.connect(junction_elec, gyrator)
+    bond_graph.connect(gyrator, junction_mech)
+    bond_graph.connect(junction_mech, bearing)
+    bond_graph.connect(junction_mech, inertia)
+
+    return bond_graph
+
+
+# -----------------------------------------------------------------------------
+# Code generation
+# -----------------------------------------------------------------------------
+def _matrix_literal(M: sp.Matrix) -> str:
+    """Render a sympy Matrix as a nested-list Python literal using pure math.
+
+    ``sp.pycode`` emits plain arithmetic operators and ``math.``-qualified
+    function calls, so the result evaluates with only the standard library.
+    """
+    if M.rows == 0 or M.cols == 0:
+        return "[]"
+    rows = []
+    for i in range(M.rows):
+        elems = [sp.pycode(M[i, j]) for j in range(M.cols)]
+        rows.append("[" + ", ".join(elems) + "]")
+    return "[" + ", ".join(rows) + "]"
+
+
+def _matrix_fn_src(name: str, M: sp.Matrix, params) -> str:
+    args = ", ".join(p.name for p in params)
+    return f"def {name}({args}):\n    return {_matrix_literal(M)}\n"
+
+
+def generate_slave_source(bond_graph: BondGraph, class_name: str = "BondGraphSlave") -> str:
+    """Do all the symbolic work and return the source of a self-contained slave."""
+    bond_graph.assign_causality()
+
+    A, B, C, D, _x, n_states, n_inputs, n_outputs = bond_graph.get_state_space()
+    n_bonds = len(bond_graph.bonds)
+
+    # Free parameters = every symbol in A/B/C/D that is not an input.
+    free_vars = set()
+    for Mtx in (A, B, C, D):
+        free_vars |= Mtx.free_symbols
+    for inp in bond_graph.inputs:
+        free_vars.discard(inp)
+    params = sorted(free_vars, key=lambda s: s.name)
+
+    subs = bond_graph.get_substitution_dict()
+
+    state_names = [sv.name for sv in bond_graph.state_vars]
+    input_names = [iv.name for iv in bond_graph.inputs]
+    param_names = [p.name for p in params]
+    param_starts = {p.name: float(subs.get(p, 0.0)) for p in params}
+
+    matrix_fns = "\n".join(
+        _matrix_fn_src(fn, Mtx, params)
+        for fn, Mtx in (("_A_fn", A), ("_B_fn", B), ("_C_fn", C), ("_D_fn", D))
+    )
+
+    # ---- assemble the runtime module ---------------------------------------
+    return f'''\
+"""AUTO-GENERATED by fmu_export.py -- do not edit by hand.
+
+Self-contained Model-Exchange FMU slave for a bond graph. Runtime dependencies:
+only the standard library and pythonfmu3 (bundled into the FMU). No sympy, no
+pyBondGraph. Parameters are live: the generated matrix functions take them as
+arguments and are re-evaluated each step from the current parameter attributes.
+"""
+
+import math  # noqa: F401  (used by generated matrix expressions)
+from typing import List
+
+from pythonfmu3 import (
+    Fmi3Causality,
+    Fmi3SlaveBase,
+    Fmi3Variability,
+    Fmi3Initial,
+    Float64,
+    ModelExchange,
+)
+
+# ----- model metadata (precomputed at build time) ---------------------------
+STATE_NAMES = {state_names!r}
+INPUT_NAMES = {input_names!r}
+PARAM_NAMES = {param_names!r}
+PARAM_STARTS = {param_starts!r}
+N_STATES = {n_states}
+N_INPUTS = {n_inputs}
+N_OUTPUTS = {n_outputs}
+N_BONDS = {n_bonds}
+
+
+# ----- generated state-space matrices (functions of the parameters) ---------
+{matrix_fns}
+
+_MATRIX_FNS = (_A_fn, _B_fn, _C_fn, _D_fn)
+
+
+class {class_name}(Fmi3SlaveBase, ModelExchange):
+    """Generic Model-Exchange FMU wrapper; all model data is generated above."""
 
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
         self.author = "MtP"
         self.description = "Bondgraph test"
 
-        # ----- model-specific part -------------------------------------------
-        bond_graph = self.build_bond_graph()
-        bond_graph.assign_causality()
+        self.n_states = N_STATES
+        self.n_inputs = N_INPUTS
+        self.n_outputs = N_OUTPUTS
+        self.n_bonds = N_BONDS
 
-        # ----- everything below is generic -----------------------------------
-        self._build_from_bondgraph(bond_graph)
+        self._register_variables()
 
-    # -------------------------------------------------------------------------
-    # Model definition (the only hardcoded part)
-    # -------------------------------------------------------------------------
-    def build_bond_graph(self) -> BondGraph:
-        """Build and return the bond graph to be exported.
+    # ------------------------------------------------------------------
+    # Registration
+    # ------------------------------------------------------------------
+    def _make_var(self, name: str, start: float = 0.0, **kwargs) -> Float64:
+        """Float64 with EXPLICIT getter/setter bound to an instance attribute.
 
-        Swap the body of this method to export a different model; the rest of
-        the class is fully generic.
+        This bypasses pythonfmu3's fragile auto-setter logic, which only creates
+        a setter when hasattr(self, name) is already True at registration time
+        and uses a name demangled via lstrip('_'). Binding explicitly makes the
+        order irrelevant and avoids the "'NoneType' object is not callable"
+        crash in fmi3SetFloat64.
         """
-        bond_graph = BondGraph()
+        setattr(self, name, float(start))
+        var = Float64(name, **kwargs)
+        var.getter = (lambda n=name: getattr(self, n))
+        var.setter = (lambda v, n=name: setattr(self, n, v))
+        return var
 
-        voltage_source = SourceEffort("V", "U_in")
-        junction_elec = OneJunction("J1_1")
-        inductor = Inductor("I_elec", "L_A", numeric_value=15e-6)
-        resistor = Resistor("R_elec", "R_A", numeric_value=4)
-        gyrator = Gyrator("G1", "K_t", numeric_value=9.54e-3)
-        junction_mech = OneJunction("J1_2")
-        bearing = Resistor("R_mech", "R_B", numeric_value=1e-6)
-        inertia = Inductor("I_mech", "J", numeric_value=1e-6)
-
-        bond_graph.connect(voltage_source, junction_elec)
-        bond_graph.connect(junction_elec, resistor)
-        bond_graph.connect(junction_elec, inductor)
-        bond_graph.connect(junction_elec, gyrator)
-        bond_graph.connect(gyrator, junction_mech)
-        bond_graph.connect(junction_mech, bearing)
-        bond_graph.connect(junction_mech, inertia)
-
-        return bond_graph
-
-    # -------------------------------------------------------------------------
-    # Generic setup
-    # -------------------------------------------------------------------------
-    def _build_from_bondgraph(self, bond_graph: BondGraph) -> None:
-        self.bg = bond_graph
-
-        # Symbolic state-space. Keep the symbolic matrices so parameters stay live.
-        A, B, C, D, _x, n_states, n_inputs, n_outputs = bond_graph.get_state_space()
-        self.A, self.B, self.C, self.D = A, B, C, D
-        self.n_states = n_states
-        self.n_inputs = n_inputs
-        self.n_outputs = n_outputs
-        # n_outputs = 2 * n_bonds; efforts occupy rows [0, n_bonds), flows [n_bonds, 2*n_bonds).
-        # This effort-then-flow stride is baked into the C and D matrices by get_state_space().
-        self.n_bonds = len(bond_graph.bonds)
-
-        # Free parameters = every symbol in A/B/C/D that is not an input.
-        free_vars = set()
-        for M in (A, B, C, D):
-            free_vars |= M.free_symbols
-        for inp in bond_graph.inputs:
-            free_vars.discard(inp)
-        # Deterministic order for lambdify argument lists and reproducibility.
-        self._params = sorted(free_vars, key=lambda s: s.name)
-
-        # Lambdify to pure-python callables (no numpy dependency in the FMU sandbox).
-        # Using .tolist() keeps the output as nested Python lists evaluated with `math`.
-        arglist = self._params
-        self._A_fn = sp.lambdify(arglist, A.tolist(), modules="math")
-        self._B_fn = sp.lambdify(arglist, B.tolist(), modules="math")
-        self._C_fn = sp.lambdify(arglist, C.tolist(), modules="math")
-        self._D_fn = sp.lambdify(arglist, D.tolist(), modules="math")
-
-        subs = bond_graph.get_substitution_dict()
-
-        # ----- register FMU variables ----------------------------------------
-        # Helper: create a Float64 with EXPLICIT getter/setter bound to an
-        # instance attribute. This bypasses pythonfmu3's fragile auto-setter
-        # logic (fmi3slave.py: register_variable), which only creates a setter
-        # if hasattr(self, name) is already True at registration time AND uses a
-        # name that has been demangled via lstrip('_') (variables.py). Relying on
-        # that ordering left the e_i/f_i outputs with setter=None, so the first
-        # fmi3SetFloat64 on them crashed with "'NoneType' object is not callable".
-        def make_var(name: str, start: float = 0.0, **kwargs) -> Float64:
-            setattr(self, name, float(start))
-            var = Float64(name, **kwargs)
-            var.getter = (lambda n=name: getattr(self, n))
-            var.setter = (lambda v, n=name: setattr(self, n, v))
-            return var
-
-        self.time = 0.0
+    def _register_variables(self) -> None:
         self.register_variable(
-            make_var("time", causality=Fmi3Causality.independent, variability=Fmi3Variability.continuous)
+            self._make_var(
+                "time",
+                causality=Fmi3Causality.independent,
+                variability=Fmi3Variability.continuous,
+            )
         )
 
         # States (outputs) + their derivatives (local). The FMI `derivative`
-        # attribute must reference the value reference of the state it derives.
-        for state_var in bond_graph.state_vars:
-            # NOTE: register_variable() returns None; it assigns the value
-            # reference *onto the variable object*. We must read it back from
-            # there, otherwise `derivative=None` and pythonfmu3 counts zero
-            # continuous states (breaking integration and crashing Simulink).
-            # IMPORTANT: the instance attribute must exist BEFORE register_variable
-            # is called. pythonfmu3 only auto-creates a setter when
-            # hasattr(self, name) is already True at registration time
-            # (see fmi3slave.py: register_variable). Registering first and
-            # setattr-ing afterwards leaves setter=None, which makes any
-            # fmi3SetFloat64 call crash with "'NoneType' object is not callable".
-            setattr(self, state_var.name, 0.0)
-            setattr(self, f"der_{state_var.name}", 0.0)
-            state = Float64(
-                state_var.name,
+        # attribute must reference the value reference of the state it derives,
+        # which register_variable assigns onto the variable object.
+        for sname in STATE_NAMES:
+            state = self._make_var(
+                sname,
                 causality=Fmi3Causality.output,
-                start=0,
+                start=0.0,
                 variability=Fmi3Variability.continuous,
                 initial=Fmi3Initial.exact,
             )
             self.register_variable(state)
             self.register_variable(
-                Float64(
-                    f"der_{state_var.name}",
+                self._make_var(
+                    f"der_{{sname}}",
                     causality=Fmi3Causality.local,
                     variability=Fmi3Variability.continuous,
                     derivative=state.value_reference,
                 )
             )
 
-        # Inputs (sources). The attribute must exist BEFORE register_variable so
-        # pythonfmu3 auto-creates a setter (see states above). Without this the
-        # first fmi3SetFloat64 on the input crashes with a NoneType setter.
-        for input_var in bond_graph.inputs:
-            setattr(self, input_var.name, 0.0)
+        # Inputs (sources).
+        for iname in INPUT_NAMES:
             self.register_variable(
-                Float64(
-                    input_var.name,
+                self._make_var(
+                    iname,
                     causality=Fmi3Causality.input,
                     variability=Fmi3Variability.continuous,
                     initial=Fmi3Initial.exact,
@@ -165,71 +225,58 @@ class BondGraphSlave(Fmi3SlaveBase, ModelExchange):
         # Outputs: effort of every bond, then flow of every bond.
         for i in range(self.n_bonds):
             self.register_variable(
-                Float64(
-                    f"e_{i + 1}",
+                self._make_var(
+                    f"e_{{i + 1}}",
                     causality=Fmi3Causality.output,
                     variability=Fmi3Variability.continuous,
                     initial=Fmi3Initial.exact,
                 )
             )
-            setattr(self, f"e_{i + 1}", 0.0)
-
         for i in range(self.n_bonds):
             self.register_variable(
-                Float64(
-                    f"f_{i + 1}",
+                self._make_var(
+                    f"f_{{i + 1}}",
                     causality=Fmi3Causality.output,
                     variability=Fmi3Variability.continuous,
                     initial=Fmi3Initial.exact,
                 )
             )
-            setattr(self, f"f_{i + 1}", 0.0)
 
-        # Parameters: configurable from the outside (e.g. Simulink), start from
-        # the numeric values stored on the elements where available.
-        # IMPORTANT: the attribute must exist BEFORE register_variable, exactly
-        # like states/inputs above. Otherwise pythonfmu3 leaves setter=None
-        # (see fmi3slave.py: register_variable) and the first fmi3SetFloat64 on
-        # a parameter crashes Simulink with "'NoneType' object is not callable".
-        for var in self._params:
-            setattr(self, var.name, float(subs.get(var, 0.0)))
+        # Parameters: configurable from the outside (e.g. Simulink).
+        for pname in PARAM_NAMES:
             self.register_variable(
-                Float64(
-                    var.name,
+                self._make_var(
+                    pname,
+                    start=PARAM_STARTS[pname],
                     causality=Fmi3Causality.parameter,
                     variability=Fmi3Variability.fixed,
                     initial=Fmi3Initial.exact,
                 )
             )
 
-    # -------------------------------------------------------------------------
+    # ------------------------------------------------------------------
     # Runtime evaluation
-    # -------------------------------------------------------------------------
+    # ------------------------------------------------------------------
     @staticmethod
     def _mat_vec(M, x):
         """Matrix (nested list) times vector, pure python."""
         return [sum(M[i][j] * x[j] for j in range(len(x))) for i in range(len(M))]
 
     def _current_matrices(self):
-        """Evaluate the symbolic state-space at the current parameter values."""
-        pvals = [getattr(self, p.name) for p in self._params]
-        A = self._A_fn(*pvals)
-        B = self._B_fn(*pvals)
-        C = self._C_fn(*pvals)
-        D = self._D_fn(*pvals)
-        return A, B, C, D
+        """Evaluate the generated state-space at the CURRENT parameter values."""
+        p = [getattr(self, n) for n in PARAM_NAMES]
+        return (fn(*p) for fn in _MATRIX_FNS)
 
     def _state_and_input_vectors(self):
-        x = [getattr(self, sv.name) for sv in self.bg.state_vars]
-        u = [getattr(self, iv.name) for iv in self.bg.inputs]
+        x = [getattr(self, n) for n in STATE_NAMES]
+        u = [getattr(self, n) for n in INPUT_NAMES]
         return x, u
 
     def _update_outputs(self, C, D, x, u) -> None:
         """Compute y = C*x + D*u and write efforts/flows.
 
-        y has length n_outputs = 2*n_bonds. The C and D matrices are built with
-        the efforts occupying the first half of the rows and the flows the
-        second half, so the split point (stride) is exactly ``n_outputs // 2``.
+        y has length N_OUTPUTS = 2*N_BONDS: efforts occupy the first half of the
+        rows, flows the second half, so the split point is N_OUTPUTS // 2.
         """
         Cx = self._mat_vec(C, x) if x else [0.0] * self.n_outputs
         Du = self._mat_vec(D, u) if u else [0.0] * self.n_outputs
@@ -237,8 +284,8 @@ class BondGraphSlave(Fmi3SlaveBase, ModelExchange):
 
         stride = self.n_outputs // 2
         for i in range(stride):
-            setattr(self, f"e_{i + 1}", y[i])
-            setattr(self, f"f_{i + 1}", y[i + stride])
+            setattr(self, f"e_{{i + 1}}", y[i])
+            setattr(self, f"f_{{i + 1}}", y[i + stride])
 
     def get_continuous_state_derivatives(self) -> List[float]:
         A, B, C, D = self._current_matrices()
@@ -248,14 +295,30 @@ class BondGraphSlave(Fmi3SlaveBase, ModelExchange):
         Bu = self._mat_vec(B, u) if u else [0.0] * self.n_states
         dx = [Ax[i] + Bu[i] for i in range(self.n_states)]
 
-        for i, state_var in enumerate(self.bg.state_vars):
-            setattr(self, f"der_{state_var.name}", dx[i])
+        for i, sname in enumerate(STATE_NAMES):
+            setattr(self, f"der_{{sname}}", dx[i])
 
-        # Keep effort/flow outputs consistent with the current state and inputs.
         self._update_outputs(C, D, x, u)
-
         return dx
 
+'''
 
+
+# -----------------------------------------------------------------------------
+# Build entry point
+# -----------------------------------------------------------------------------
 if __name__ == "__main__":
-    BondGraphSlave(instance_name="ASDF")
+    here = Path(__file__).resolve().parent
+    slave_path = here / "fmu_slave.py"
+
+    source = generate_slave_source(build_bond_graph())
+    slave_path.write_text(source, encoding="utf-8")
+    print(f"Generated self-contained slave: {slave_path}")
+
+    # Build the FMU from the generated (dependency-free) slave module.
+    from pythonfmu3 import FmuBuilder
+
+    FmuBuilder.build_FMU(str(slave_path), dest=str(here.parent))
+    print("FMU built.")
+
+    slave_path.unlink()  # clean up the generated slave module
