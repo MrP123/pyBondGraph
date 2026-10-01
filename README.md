@@ -3,6 +3,8 @@
 
 The library allows users to construct bond graph models programmatically, automatically derive the governing equations, and analyze the resulting dynamic systems using tools from control theory.
 
+`pyBondGraph` can also export FMUs [(Functional Mock-up Units)](https://fmi-standard.org/) based on FMI 3.0 for Model Exchange, enabling interoperability with other simulation tools such as Simulink.
+
 Bond graphs provide a **domain-independent modeling framework** for physical systems. Using a unified representation of power exchange, the same modeling approach can be used for electrical, mechanical, hydraulic, and multi-domain systems.
 
 ---
@@ -86,6 +88,8 @@ bg.plot()
 
 # derive system equations in linear state space form
 A, B, C, D, x, n_states, n_inputs, n_outputs = bg.get_state_space()
+
+bg.to_fmu("rc_filter")
 ```
 
 Causality can also be assigned **manually** by passing a `Causality` value to `connect()`, or in **mixed mode** where some bonds are fixed and SCAP resolves the rest.
@@ -173,6 +177,4 @@ Bond graph modeling is particularly useful for:
 
 # Planned Features
 
-* **FMU Export**: export bond graph models as Functional Mock-up Units (FMI standard) for interoperability with Simulink, Dymola, OpenModelica, and other FMI-compliant tools
 * **Nonlinear element support**: general nonlinear constitutive laws with Jacobian linearization
-* **Convenience bridge to python-control**: `to_control_ss(params)` method wrapping the existing manual pattern
