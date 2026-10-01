@@ -1,0 +1,216 @@
+"""Template for the auto generator in fmu_export.py
+DO NOT edit by hand unless you REALLY know what you are doing.
+
+The format follows the Python standard library's string.Template, which is a simple $-substitution engine.
+
+Self-contained Model-Exchange FMU slave for a bond graph. Only Runtime
+dependencies are the Python standard library & pythonfmu3.
+FMU parameters are live via generated matrix functions that take them as
+arguments. These are re-evaluated each step from the current parameter attributes.
+"""
+
+import math  # noqa: F401  (used by generated matrix expressions)
+from typing import List
+
+from pythonfmu3 import (
+    Fmi3Causality,
+    Fmi3SlaveBase,
+    Fmi3Variability,
+    Fmi3Initial,
+    Float64,
+    ModelExchange,
+    Fmi3UpdateDiscreteStatesResult,
+)
+
+# ----- model metadata (precomputed at build time) ---------------------------
+STATE_NAMES = $state_names
+INPUT_NAMES = $input_names
+PARAM_NAMES = $param_names
+PARAM_STARTS = $param_starts
+N_STATES = $n_states
+N_INPUTS = $n_inputs
+N_OUTPUTS = $n_outputs
+N_BONDS = $n_bonds
+
+
+# ----- generated state-space matrices (functions of the parameters) ---------
+$matrix_fns
+
+_MATRIX_FNS = (_A_fn, _B_fn, _C_fn, _D_fn)
+
+
+class $class_name(Fmi3SlaveBase, ModelExchange):
+    """Generic Model-Exchange FMU wrapper; all model data is generated above."""
+
+    def __init__(self, **kwargs):
+        super().__init__(**kwargs)
+        self.author = "$author_name"
+        self.description = "$description"
+
+        # GUID based on the model content --> makes sure unchanged regenerated
+        # versions of the same model keep the same id
+        # pythonfmu3 would hand out random uuid's otherwise
+        self.guid = "$guid"
+
+        self.n_states = N_STATES
+        self.n_inputs = N_INPUTS
+        self.n_outputs = N_OUTPUTS
+        self.n_bonds = N_BONDS
+
+        self._register_variables()
+
+    # ------------------------------------------------------------------
+    # Registration
+    # ------------------------------------------------------------------
+    def _make_var(self, name: str, start: float = 0.0, **kwargs) -> Float64:
+        """Float64 with EXPLICIT getter/setter bound to an instance attribute.
+
+        This bypasses pythonfmu3's fragile auto-setter logic, which only creates
+        a setter when hasattr(self, name) is already True at registration time
+        and uses a name demangled via lstrip('_'). Binding explicitly makes the
+        order irrelevant and avoids the "'NoneType' object is not callable"
+        crash in fmi3SetFloat64.
+        """
+        setattr(self, name, float(start))
+        var = Float64(name, **kwargs)
+        var.getter = (lambda n=name: getattr(self, n))
+        var.setter = (lambda v, n=name: setattr(self, n, v))
+        return var
+
+    def _register_variables(self) -> None:
+        self.register_variable(
+            self._make_var(
+                "time",
+                causality=Fmi3Causality.independent,
+                variability=Fmi3Variability.continuous,
+            )
+        )
+
+        # States (outputs) + their derivatives (local). The FMI `derivative`
+        # attribute must reference the value reference of the state it derives,
+        # which register_variable assigns onto the variable object.
+        for sname in STATE_NAMES:
+            state = self._make_var(
+                sname,
+                causality=Fmi3Causality.output,
+                start=0.0,
+                variability=Fmi3Variability.continuous,
+                initial=Fmi3Initial.exact,
+            )
+            self.register_variable(state)
+            self.register_variable(
+                self._make_var(
+                    f"der_{sname}",
+                    causality=Fmi3Causality.local,
+                    variability=Fmi3Variability.continuous,
+                    derivative=state.value_reference,
+                )
+            )
+
+        # Inputs (sources).
+        for iname in INPUT_NAMES:
+            self.register_variable(
+                self._make_var(
+                    iname,
+                    causality=Fmi3Causality.input,
+                    variability=Fmi3Variability.continuous,
+                    initial=Fmi3Initial.exact,
+                )
+            )
+
+        # Outputs: effort of every bond, then flow of every bond.
+        for i in range(self.n_bonds):
+            self.register_variable(
+                self._make_var(
+                    f"e_{i + 1}",
+                    causality=Fmi3Causality.output,
+                    variability=Fmi3Variability.continuous,
+                    initial=Fmi3Initial.exact,
+                )
+            )
+        for i in range(self.n_bonds):
+            self.register_variable(
+                self._make_var(
+                    f"f_{i + 1}",
+                    causality=Fmi3Causality.output,
+                    variability=Fmi3Variability.continuous,
+                    initial=Fmi3Initial.exact,
+                )
+            )
+
+        # Parameters: configurable from the outside (e.g. Simulink).
+        for pname in PARAM_NAMES:
+            self.register_variable(
+                self._make_var(
+                    pname,
+                    start=PARAM_STARTS[pname],
+                    causality=Fmi3Causality.parameter,
+                    variability=Fmi3Variability.fixed,
+                    initial=Fmi3Initial.exact,
+                )
+            )
+
+    # ------------------------------------------------------------------
+    # Runtime evaluation
+    # ------------------------------------------------------------------
+    @staticmethod
+    def _mat_vec(M, x):
+        """Matrix (nested list) times vector, pure python."""
+        return [sum(M[i][j] * x[j] for j in range(len(x))) for i in range(len(M))]
+
+    def _current_matrices(self):
+        """Evaluate the generated state-space at the CURRENT parameter values."""
+        p = [getattr(self, n) for n in PARAM_NAMES]
+        return (fn(*p) for fn in _MATRIX_FNS)
+
+    def _state_and_input_vectors(self):
+        x = [getattr(self, n) for n in STATE_NAMES]
+        u = [getattr(self, n) for n in INPUT_NAMES]
+        return x, u
+
+    def _update_outputs(self, C, D, x, u) -> None:
+        """Compute y = C*x + D*u and write efforts/flows.
+
+        y has length N_OUTPUTS = 2*N_BONDS: efforts occupy the first half of the
+        rows, flows the second half, so the split point is N_OUTPUTS // 2.
+        """
+        Cx = self._mat_vec(C, x) if x else [0.0] * self.n_outputs
+        Du = self._mat_vec(D, u) if u else [0.0] * self.n_outputs
+        y = [Cx[i] + Du[i] for i in range(self.n_outputs)]
+
+        stride = self.n_outputs // 2
+        for i in range(stride):
+            setattr(self, f"e_{i + 1}", y[i])
+            setattr(self, f"f_{i + 1}", y[i + stride])
+
+    def get_continuous_state_derivatives(self) -> List[float]:
+        A, B, C, D = self._current_matrices()
+        x, u = self._state_and_input_vectors()
+
+        Ax = self._mat_vec(A, x) if x else [0.0] * self.n_states
+        Bu = self._mat_vec(B, u) if u else [0.0] * self.n_states
+        dx = [Ax[i] + Bu[i] for i in range(self.n_states)]
+
+        for i, sname in enumerate(STATE_NAMES):
+            setattr(self, f"der_{sname}", dx[i])
+
+        self._update_outputs(C, D, x, u)
+        return dx
+
+    def update_discrete_states(self) -> Fmi3UpdateDiscreteStatesResult:
+        """Signal that the event iteration has converged (no discrete events).
+
+        This fixes a bug in pythonfmu3: It's C layer expects the attribute
+        `discreteStatesNeedUpdate` (plural States / Need), but
+        Fmi3UpdateDiscreteStatesResult names its field `discreteStateNeedsUpdate`
+        (singular State / Needs). Because of that spelling mismatch the default
+        result never reaches the importer, so Simulink keeps iterating
+        fmiEventUpdate up to its 10000 cap. Setting the name the C layer
+        actually reads makes the loop exit immediately.
+
+        This can safely done, as this LTI system has no events.
+        """
+        result = Fmi3UpdateDiscreteStatesResult()
+        result.discreteStatesNeedUpdate = False
+        result.nextEventTimeDefined = False
+        return result
